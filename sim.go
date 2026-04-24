@@ -78,7 +78,7 @@ const (
 
 const (
 	laneChangeHalfSecs        float32 = 1.0
-	laneChangeMinSpeed        float32 = 3.0
+	laneChangeMinSpeed        float32 = 2.0
 	laneChangeDirCos          float32 = 0.71
 	preferenceChangeCooldownS float32 = 7.5
 	overtakeSlowThresholdS    float32 = 2.0
@@ -105,7 +105,7 @@ const (
 )
 
 const (
-	pedestrianSpawnIntervalS          float32 = 32.0
+	pedestrianSpawnIntervalS          float32 = 45.7
 	pedestrianSpawnJitterFrac         float32 = 0.25
 	pedestrianSpawnRetryDelayS        float32 = 0.75
 	pedestrianSpawnInsetM             float32 = 0.35
@@ -128,7 +128,7 @@ const (
 	// pedestrianCrossingBlockRadiusM is how close a pedestrian must be (along
 	// their path, either side of the crossing) for the crossing to act like a
 	// red traffic light to cars on the intersecting spline.
-	pedestrianCrossingBlockRadiusM float32 = 5.0
+	pedestrianCrossingBlockRadiusM float32 = 7.5
 	// pedestrianCrossingCarRadiusM is how close a car must be to the crossing
 	// (along its spline) to count as occupying it from a pedestrian's POV.
 	pedestrianCrossingCarRadiusM float32 = 3.0
