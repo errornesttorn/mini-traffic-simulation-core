@@ -125,13 +125,24 @@ const (
 	pedestrianSameDirectionSlowFactor float32 = 0.65
 	pedestrianTurnLengthFloorM        float32 = 0.4
 	pedestrianTurnSamples                     = 12
-	// pedestrianCrossingBlockRadiusM is how close a pedestrian must be (along
-	// their path, either side of the crossing) for the crossing to act like a
-	// red traffic light to cars on the intersecting spline.
-	pedestrianCrossingBlockRadiusM float32 = 7.5
+	// pedestrianCrossingBlockRadiusM is how close a pedestrian standing or
+	// walking-away must be (along their path) for the crossing to act like a
+	// red traffic light to cars. For pedestrians walking *toward* the crossing
+	// the predicate also fires when their predicted time-to-arrival is below
+	// pedestrianCrossingApproachSecs, so a fast walker further out is still
+	// counted.
+	pedestrianCrossingBlockRadiusM float32 = 3.0
+	// pedestrianCrossingApproachSecs is the lookahead window used to decide
+	// whether an approaching pedestrian should already block cars.
+	pedestrianCrossingApproachSecs float32 = 3.0
 	// pedestrianCrossingCarRadiusM is how close a car must be to the crossing
 	// (along its spline) to count as occupying it from a pedestrian's POV.
 	pedestrianCrossingCarRadiusM float32 = 3.0
+	// pedestrianCrossingCarApproachSecs is the lookahead window for treating
+	// an approaching car as already blocking the crossing from a pedestrian's
+	// POV. Pedestrians who would otherwise step in front of a closing car wait
+	// until either it has cleared or stopped short.
+	pedestrianCrossingCarApproachSecs float32 = 2.5
 	// pedestrianCrossingStopBufferM is how far (along the pedestrian path) a
 	// pedestrian stops in front of the crossing when waiting. Kept smaller than
 	// stopFrontGapM so cars stopping at the crossing stay behind the pedestrian.
@@ -1747,7 +1758,32 @@ func buildPedestrianBlockedSplineDists(crossings []pedestrianCrossing, paths []P
 			}
 		}
 		for _, c := range pathCrossings {
-			if absf(pedX-c.DistOnPath) > pedestrianCrossingBlockRadiusM {
+			delta := c.DistOnPath - pedX
+			absDelta := absf(delta)
+			// In/near the zone — always blocks regardless of motion.
+			blocks := absDelta <= pedestrianCrossingBlockRadiusM
+			if !blocks {
+				// Approaching the zone — block when the pedestrian's predicted
+				// arrival is within the lookahead window. A stopped ped
+				// upstream still counts because they may resume walking, so
+				// the predicate uses max(current speed, base/typical speed)
+				// rather than instantaneous speed. Peds past the crossing in
+				// their direction of travel never block.
+				approaching := (ped.Forward && delta > 0) || (!ped.Forward && delta < 0)
+				if approaching {
+					effSpeed := ped.Speed
+					if ped.BaseSpeed > effSpeed {
+						effSpeed = ped.BaseSpeed
+					}
+					if effSpeed < pedestrianSpeedMinMPS {
+						effSpeed = pedestrianSpeedMinMPS
+					}
+					if absDelta/effSpeed <= pedestrianCrossingApproachSecs {
+						blocks = true
+					}
+				}
+			}
+			if !blocks {
 				continue
 			}
 			if nextRedX >= 0 {
@@ -1772,21 +1808,25 @@ func computePedestrianCrossingSpeedCap(car Car, currentSpline *Spline, graph *Ro
 	if len(blockedBySpline) == 0 {
 		return float32(math.MaxFloat32)
 	}
-	decel := car.Accel * 1.5
+	// See computeTrafficLightSpeedCap for the rationale: pessimistic decel
+	// plus an extra margin makes braking start earlier, so the car reliably
+	// halts before the crossing instead of creeping into it.
+	capDecel := car.Accel * 0.9
+	const stopMarginM float32 = 2.0
 	result := float32(math.MaxFloat32)
 	remaining := currentSpline.Length - car.DistanceOnSpline
-	lookahead := car.Speed*car.Speed/(2*decel) + 20
+	lookahead := car.Speed*car.Speed/(2*capDecel) + 20
 	if lookahead > 200 {
 		lookahead = 200
 	}
 
 	checkDist := func(rawDistAhead float32) {
-		adj := rawDistAhead - stopFrontGapM
+		adj := rawDistAhead - stopFrontGapM - stopMarginM
 		if adj <= 0 {
 			result = 0
 			return
 		}
-		allowed := sqrtf(2 * decel * adj)
+		allowed := sqrtf(2 * capDecel * adj)
 		if allowed < result {
 			result = allowed
 		}
@@ -1813,11 +1853,18 @@ func computePedestrianCrossingSpeedCap(car Car, currentSpline *Spline, graph *Ro
 	return result
 }
 
-// anyCarOccupiesCrossing returns true if any car on the given spline is within
-// pedestrianCrossingCarRadiusM of the crossing point. The car's body is
-// [front - Length, front] where front is DistanceOnSpline. Stopped cars are
-// treated as yielding so pedestrians don't deadlock against one that already
-// came to rest on the crossing.
+// anyCarOccupiesCrossing returns true if any car on the given spline is
+// actually going to be in the crossing zone soon enough that the pedestrian
+// should wait. Two cases trigger that:
+//
+//   - A moving car geometrically overlaps the zone with its body. A *stopped*
+//     car overlapping the zone is treated as having yielded (or as having
+//     overshot and now stuck) — pedestrians walk past it rather than
+//     deadlocking against a parked obstacle.
+//   - A car upstream of the zone is closing fast enough to enter within
+//     pedestrianCrossingCarApproachSecs AND cannot stop in time at normal
+//     deceleration. A car already braking enough to halt before the zone is
+//     not a threat, so peds don't need to wait for it.
 func anyCarOccupiesCrossing(cars []Car, splineID int, distOnSpline float32) bool {
 	const stoppedCarSpeedMPS float32 = 0.5
 	lo := distOnSpline - pedestrianCrossingCarRadiusM
@@ -1826,15 +1873,31 @@ func anyCarOccupiesCrossing(cars []Car, splineID int, distOnSpline float32) bool
 		if car.CurrentSplineID != splineID {
 			continue
 		}
-		if car.Speed < stoppedCarSpeedMPS {
-			continue
-		}
 		front := car.DistanceOnSpline
 		rear := front - car.Length
-		if front < lo || rear > hi {
+		if front >= lo && rear <= hi {
+			if car.Speed >= stoppedCarSpeedMPS {
+				return true
+			}
 			continue
 		}
-		return true
+		if rear < lo && car.Speed > stoppedCarSpeedMPS {
+			distToZone := lo - front
+			if distToZone < 0 {
+				distToZone = 0
+			}
+			if distToZone/car.Speed > pedestrianCrossingCarApproachSecs {
+				continue
+			}
+			// Will the car still be moving fast when it reaches the zone?
+			// If it can stop before lo at normal braking, it's yielding —
+			// pedestrians can step out without waiting on it.
+			decel := car.Accel * 1.5
+			if decel > 0 && car.Speed*car.Speed/(2*decel) <= distToZone {
+				continue
+			}
+			return true
+		}
 	}
 	return false
 }
@@ -5313,21 +5376,33 @@ func buildStoppingTrafficLightsBySpline(lights []TrafficLight, cycles []TrafficC
 }
 
 func computeTrafficLightSpeedCap(car Car, currentSpline *Spline, graph *RoadGraph, stoppingLightsBySpline map[int][]TrafficLight) float32 {
-	decel := car.Accel * 1.5
+	// capDecel is intentionally lower than the deceleration the car will
+	// actually brake at (car.Accel * 1.5, or higher with brakeDecelMultiplier
+	// when Braking). Running the kinematic cap on a pessimistic decel makes
+	// braking start earlier, leaving real-world margin for timestep noise,
+	// late light changes, and follow-cap interactions — without that margin
+	// the cap sits exactly on the kinematic limit and any perturbation lets
+	// the car drift past the stop line at low speed.
+	capDecel := car.Accel * 0.9
+	// stopMarginM is added to stopFrontGapM only for the cap computation so
+	// the kinematic curve aims a couple of meters short of the legal stop
+	// point. The car still physically stops at stopFrontGapM, but the
+	// deceleration profile is shaped to land there comfortably.
+	const stopMarginM float32 = 2.0
 	result := float32(math.MaxFloat32)
 	remaining := currentSpline.Length - car.DistanceOnSpline
-	lookahead := car.Speed*car.Speed/(2*decel) + 20
+	lookahead := car.Speed*car.Speed/(2*capDecel) + 20
 	if lookahead > 200 {
 		lookahead = 200
 	}
 
 	checkLight := func(rawDistAhead float32) {
-		adj := rawDistAhead - stopFrontGapM
+		adj := rawDistAhead - stopFrontGapM - stopMarginM
 		if adj <= 0 {
 			result = 0
 			return
 		}
-		allowed := sqrtf(2 * decel * adj)
+		allowed := sqrtf(2 * capDecel * adj)
 		if allowed < result {
 			result = allowed
 		}

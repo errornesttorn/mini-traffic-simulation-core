@@ -143,6 +143,41 @@ func TestTurnSignalFromMapLinkLeft(t *testing.T) {
 	}
 }
 
+func TestTurnSignalMapLinkLeadTime(t *testing.T) {
+	// Long spline (100m). At max speed (36.1 m/s), lead time 2s means it
+	// should activate within 72.2m of the end.
+	s1 := NewSpline(1,
+		NewVec2(0, 0), NewVec2(33, 0), NewVec2(66, 0), NewVec2(100, 0),
+	)
+	s2 := NewSpline(2,
+		NewVec2(100, 0), NewVec2(105, 0), NewVec2(110, 5), NewVec2(115, 10),
+	)
+	s1.RightTurnLinkIDs = []int{2}
+	graph := NewRoadGraph([]Spline{s1, s2}, nil)
+
+	// Case A: At distance 10 (remaining 90m). 90/36.1 = 2.49s > 2s. Should be OFF.
+	carA := Car{
+		CurrentSplineID:     1,
+		DistanceOnSpline:    10,
+		DestinationSplineID: 2,
+		DesiredLaneSplineID: -1,
+	}
+	if got := computeCarTurnSignal(carA, graph); got != TurnSignalNone {
+		t.Fatalf("expected TurnSignalNone at distance 10 (remaining 90m), got %d", got)
+	}
+
+	// Case B: At distance 60 (remaining 40m). 40/36.1 = 1.1s < 2s. Should be ON.
+	carB := Car{
+		CurrentSplineID:     1,
+		DistanceOnSpline:    60,
+		DestinationSplineID: 2,
+		DesiredLaneSplineID: -1,
+	}
+	if got := computeCarTurnSignal(carB, graph); got != TurnSignalRight {
+		t.Fatalf("expected TurnSignalRight at distance 60 (remaining 40m), got %d", got)
+	}
+}
+
 func TestTurnSignalMapLinkIgnoredIfNextSplineDiffers(t *testing.T) {
 	// s1 has a right-turn link to s3, but the car's destination routes
 	// through s2. No signal should fire.
