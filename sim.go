@@ -4659,6 +4659,11 @@ func updateCars(cars []Car, routes []Route, graph *RoadGraph, brakingDecisions [
 // directional. Keeps straight-following sibling splines from flickering.
 const turnSignalDeadbandM float32 = 0.15
 
+// turnSignalMapLinkLeadSecs is how long before reaching the end of the
+// current spline a map-link turn indicator activates, measured at the
+// spline's effective max speed.
+const turnSignalMapLinkLeadSecs float32 = 2.0
+
 // computeCarTurnSignal decides whether a car should indicate left, right, or
 // neither this step. Trigger order:
 //  1. LaneChanging: project the bridge's start→end vector onto the source
@@ -4720,6 +4725,17 @@ func turnSignalFromMapLinks(car Car, graph *RoadGraph) TurnSignalState {
 		return TurnSignalNone
 	}
 	if car.DestinationSplineID <= 0 || car.CurrentSplineID == car.DestinationSplineID {
+		return TurnSignalNone
+	}
+	remaining := current.Length - car.DistanceOnSpline
+	if remaining <= 0 {
+		return TurnSignalNone
+	}
+	maxSpeed := EffectiveMaxSpeedMPS(*current)
+	if maxSpeed <= 0 {
+		return TurnSignalNone
+	}
+	if remaining/maxSpeed > turnSignalMapLinkLeadSecs {
 		return TurnSignalNone
 	}
 	nextID, ok := ChooseNextSplineOnBestPathWithGraph(graph, car.CurrentSplineID, car.DestinationSplineID, car.VehicleKind)
