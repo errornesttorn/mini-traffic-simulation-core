@@ -293,6 +293,9 @@ type Car struct {
 	// blinking phase is owned by the renderer.
 	TurnSignal TurnSignalState
 
+	TurnSignalTimer  float32
+	TurnSignalMemory TurnSignalState
+
 	Trailer Trailer
 }
 
@@ -1329,7 +1332,7 @@ func (w *World) Step(dt float32) {
 	pedestrianCars = append(pedestrianCars, simCars...)
 	pedestrianCars = append(pedestrianCars, externalCars...)
 	w.Pedestrians, w.PedestrianSpawnTimers = updatePedestrians(w.Pedestrians, w.PedestrianPaths, &w.NextPedestrianID, w.PedestrianSpawnTimers, dt, pedestrianCrossings, pedestrianCars, stoppingPedestrianLights)
-	assignCarTurnSignals(simCars, allGraph)
+	assignCarTurnSignals(simCars, allGraph, dt)
 	w.UpdateCarsMS = sinceMS(updateCarsStart)
 	w.Cars = append(simCars, externalCars...)
 
@@ -4581,6 +4584,10 @@ func transitionCarToNextSpline(car *Car, route Route, graph *RoadGraph) bool {
 
 	car.PrevSplineIDs[1] = car.PrevSplineIDs[0]
 	car.PrevSplineIDs[0] = car.CurrentSplineID
+	if car.TurnSignal == TurnSignalLeft || car.TurnSignal == TurnSignalRight {
+		car.TurnSignalTimer = 1.5
+		car.TurnSignalMemory = car.TurnSignal
+	}
 	car.CurrentSplineID = nextSplineID
 	resumeBusRouteAfterStop(route, car)
 
@@ -4896,12 +4903,20 @@ func turnSignalFromMapLinks(car Car, graph *RoadGraph) TurnSignalState {
 // assignCarTurnSignals refreshes each car's TurnSignal field in place based
 // on the current lane-change state. External-controlled cars are left alone
 // so the player/controller can drive their indicators directly.
-func assignCarTurnSignals(cars []Car, graph *RoadGraph) {
+func assignCarTurnSignals(cars []Car, graph *RoadGraph, dt float32) {
 	for i := range cars {
 		if cars[i].ControlMode == CarControlExternal {
 			continue
 		}
-		cars[i].TurnSignal = computeCarTurnSignal(cars[i], graph)
+		if cars[i].TurnSignalTimer > 0 {
+			cars[i].TurnSignalTimer -= dt
+		}
+		computed := computeCarTurnSignal(cars[i], graph)
+		if computed == TurnSignalNone && cars[i].TurnSignalTimer > 0 {
+			cars[i].TurnSignal = cars[i].TurnSignalMemory
+		} else {
+			cars[i].TurnSignal = computed
+		}
 	}
 }
 

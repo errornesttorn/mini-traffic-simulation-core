@@ -237,11 +237,44 @@ func TestAssignCarTurnSignalsSkipsExternal(t *testing.T) {
 		{CurrentSplineID: 1, DistanceOnSpline: 5, DesiredLaneSplineID: 2},
 		{CurrentSplineID: 1, DistanceOnSpline: 5, DesiredLaneSplineID: 2, ControlMode: CarControlExternal, TurnSignal: TurnSignalNone},
 	}
-	assignCarTurnSignals(cars, graph)
+	assignCarTurnSignals(cars, graph, 0.1)
 	if cars[0].TurnSignal != TurnSignalLeft {
 		t.Fatalf("AI car should get TurnSignalLeft, got %d", cars[0].TurnSignal)
 	}
 	if cars[1].TurnSignal != TurnSignalNone {
 		t.Fatalf("external car should be left untouched, got %d", cars[1].TurnSignal)
+	}
+}
+
+func TestTurnSignalDelay(t *testing.T) {
+	splines := []Spline{
+		turnSignalStraightSpline(1, 0, 0, 30, 0),
+		turnSignalStraightSpline(2, 30, 0, 60, 0),
+	}
+	graph := turnSignalGraph(splines)
+	
+	car := Car{
+		CurrentSplineID:  2, // already on next spline
+		DistanceOnSpline: 5,
+		TurnSignalTimer:  1.5,
+		TurnSignalMemory: TurnSignalLeft,
+		TurnSignal:       TurnSignalNone,
+	}
+
+	cars := []Car{car}
+	
+	// First tick, timer goes from 1.5 down by 0.1
+	assignCarTurnSignals(cars, graph, 0.1)
+	if cars[0].TurnSignal != TurnSignalLeft {
+		t.Fatalf("Expected TurnSignalLeft to be preserved by timer, got %d", cars[0].TurnSignal)
+	}
+	if cars[0].TurnSignalTimer <= 0 {
+		t.Fatalf("Timer should be > 0, got %f", cars[0].TurnSignalTimer)
+	}
+
+	// Advance time past 1.5 seconds
+	assignCarTurnSignals(cars, graph, 1.5)
+	if cars[0].TurnSignal != TurnSignalNone {
+		t.Fatalf("Expected TurnSignalNone after timer expires, got %d", cars[0].TurnSignal)
 	}
 }
