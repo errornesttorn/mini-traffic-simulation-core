@@ -2296,6 +2296,28 @@ type SavedSplineFile struct {
 	TrafficLights   []SavedTrafficLight   `json:"traffic_lights,omitempty"`
 	TrafficCycles   []SavedTrafficCycle   `json:"traffic_cycles,omitempty"`
 	PedestrianPaths []SavedPedestrianPath `json:"pedestrian_paths,omitempty"`
+	Pedestrians     []SavedPedestrian     `json:"pedestrians,omitempty"`
+}
+
+type SavedPedestrian struct {
+	ID                    int     `json:"id"`
+	PathIndex             int     `json:"path_index"`
+	Distance              float32 `json:"distance"`
+	Forward               bool    `json:"forward"`
+	Speed                 float32 `json:"speed"`
+	BaseSpeed             float32 `json:"base_speed"`
+	Radius                float32 `json:"radius"`
+	LateralOffset         float32 `json:"lateral_offset"`
+	SideBias              float32 `json:"side_bias"`
+	TransitionActive      bool    `json:"transition_active,omitempty"`
+	TransitionDistance    float32 `json:"transition_distance,omitempty"`
+	TransitionLength      float32 `json:"transition_length,omitempty"`
+	TransitionP0          Vec2    `json:"transition_p0,omitempty"`
+	TransitionP1          Vec2    `json:"transition_p1,omitempty"`
+	TransitionP2          Vec2    `json:"transition_p2,omitempty"`
+	TransitionNextPath    int     `json:"transition_next_path,omitempty"`
+	TransitionNextForward bool    `json:"transition_next_forward,omitempty"`
+	TransitionEndOffset   float32 `json:"transition_end_offset,omitempty"`
 }
 
 type SavedPedestrianPath struct {
@@ -2389,6 +2411,7 @@ func (w *World) Save(path string) error {
 		TrafficLights:   make([]SavedTrafficLight, 0, len(w.TrafficLights)),
 		TrafficCycles:   make([]SavedTrafficCycle, 0, len(w.TrafficCycles)),
 		PedestrianPaths: make([]SavedPedestrianPath, 0, len(w.PedestrianPaths)),
+		Pedestrians:     make([]SavedPedestrian, 0, len(w.Pedestrians)),
 	}
 	for _, spline := range w.Splines {
 		saved.Splines = append(saved.Splines, SavedSpline{
@@ -2485,6 +2508,28 @@ func (w *World) Save(path string) error {
 			P1: p.P1,
 		})
 	}
+	for _, p := range w.Pedestrians {
+		saved.Pedestrians = append(saved.Pedestrians, SavedPedestrian{
+			ID:                    p.ID,
+			PathIndex:             p.PathIndex,
+			Distance:              p.Distance,
+			Forward:               p.Forward,
+			Speed:                 p.Speed,
+			BaseSpeed:             p.BaseSpeed,
+			Radius:                p.Radius,
+			LateralOffset:         p.LateralOffset,
+			SideBias:              p.SideBias,
+			TransitionActive:      p.TransitionActive,
+			TransitionDistance:    p.TransitionDistance,
+			TransitionLength:      p.TransitionLength,
+			TransitionP0:          p.TransitionP0,
+			TransitionP1:          p.TransitionP1,
+			TransitionP2:          p.TransitionP2,
+			TransitionNextPath:    p.TransitionNextPath,
+			TransitionNextForward: p.TransitionNextForward,
+			TransitionEndOffset:   p.TransitionEndOffset,
+		})
+	}
 	data, err := json.MarshalIndent(saved, "", "  ")
 	if err != nil {
 		return err
@@ -2504,7 +2549,7 @@ func LoadWorld(path string) (*World, error) {
 	}
 
 	world := NewWorld()
-	maxSplineID, maxRouteID, maxLightID, maxCycleID, maxCarID := 0, 0, 0, 0, 0
+	maxSplineID, maxRouteID, maxLightID, maxCycleID, maxCarID, maxPedestrianID := 0, 0, 0, 0, 0, 0
 
 	world.Splines = make([]Spline, 0, len(saved.Splines))
 	for _, entry := range saved.Splines {
@@ -2693,11 +2738,41 @@ func LoadWorld(path string) (*World, error) {
 		}
 	}
 
+	if len(saved.Pedestrians) > 0 {
+		world.Pedestrians = make([]Pedestrian, 0, len(saved.Pedestrians))
+		for _, entry := range saved.Pedestrians {
+			world.Pedestrians = append(world.Pedestrians, Pedestrian{
+				ID:                    entry.ID,
+				PathIndex:             entry.PathIndex,
+				Distance:              entry.Distance,
+				Forward:               entry.Forward,
+				Speed:                 entry.Speed,
+				BaseSpeed:             entry.BaseSpeed,
+				Radius:                entry.Radius,
+				LateralOffset:         entry.LateralOffset,
+				SideBias:              entry.SideBias,
+				TransitionActive:      entry.TransitionActive,
+				TransitionDistance:    entry.TransitionDistance,
+				TransitionLength:      entry.TransitionLength,
+				TransitionP0:          entry.TransitionP0,
+				TransitionP1:          entry.TransitionP1,
+				TransitionP2:          entry.TransitionP2,
+				TransitionNextPath:    entry.TransitionNextPath,
+				TransitionNextForward: entry.TransitionNextForward,
+				TransitionEndOffset:   entry.TransitionEndOffset,
+			})
+			if entry.ID > maxPedestrianID {
+				maxPedestrianID = entry.ID
+			}
+		}
+	}
+
 	world.NextSplineID = maxSplineID + 1
 	world.NextRouteID = maxRouteID + 1
 	world.NextLightID = maxLightID + 1
 	world.NextCycleID = maxCycleID + 1
 	world.NextCarID = maxCarID + 1
+	world.NextPedestrianID = maxPedestrianID + 1
 	return &world, nil
 }
 
