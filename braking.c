@@ -338,7 +338,7 @@ static int find_forced_lane_change(const CGraph *g, const CRouteTree *tree,
    Collision geometry
    ═══════════════════════════════════════════════════════════════════ */
 
-static float hitbox_radius(float width) { return width / 2 + 0.5f; }
+static float hitbox_radius(float width) { return width / 2 + 0.35f; }
 
 static int hitbox_circle_offsets(float length, float width, float *out, int max_out) {
     float r = hitbox_radius(width);

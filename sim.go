@@ -5639,10 +5639,11 @@ func computeTrafficLightSpeedCap(car Car, currentSpline *Spline, graph *RoadGrap
 	// the cap sits exactly on the kinematic limit and any perturbation lets
 	// the car drift past the stop line at low speed.
 	capDecel := car.Accel * 0.9
-	// stopMarginM is added to stopFrontGapM only for the cap computation so
-	// the kinematic curve aims a couple of meters short of the legal stop
-	// point. The car still physically stops at stopFrontGapM, but the
-	// deceleration profile is shaped to land there comfortably.
+	// trafficLightStopFrontGapM and stopMarginM together determine how far
+	// before the light cars come to rest. The car physically stops at
+	// trafficLightStopFrontGapM; the margin shapes the deceleration curve to
+	// land there comfortably.
+	const trafficLightStopFrontGapM float32 = 2.5
 	const stopMarginM float32 = 2.0
 	result := float32(math.MaxFloat32)
 	remaining := currentSpline.Length - car.DistanceOnSpline
@@ -5652,7 +5653,7 @@ func computeTrafficLightSpeedCap(car Car, currentSpline *Spline, graph *RoadGrap
 	}
 
 	checkLight := func(rawDistAhead float32) {
-		adj := rawDistAhead - stopFrontGapM - stopMarginM
+		adj := rawDistAhead - trafficLightStopFrontGapM - stopMarginM
 		if adj <= 0 {
 			result = 0
 			return
@@ -6255,7 +6256,7 @@ func PickNextColorIndex(routes []Route) int {
 }
 
 func hitboxRadius(width float32) float32 {
-	return width/2 + 0.5
+	return width/2 + 0.35
 }
 
 func hitboxCircleOffsets(length, width float32) []float32 {
