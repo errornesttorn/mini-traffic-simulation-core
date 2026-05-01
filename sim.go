@@ -484,6 +484,26 @@ type FollowingProfile struct {
 	CandidateRefs int
 }
 
+type PedestrianProfile struct {
+	Pedestrians int
+	Paths       int
+	Crossings   int
+
+	CrossingsMS      float64
+	StoppingLightsMS float64
+	BlockedSplinesMS float64
+
+	UpdateMS       float64
+	TopologyMS     float64
+	TargetsMS      float64
+	MovementCapsMS float64
+	IntegrateMS    float64
+	SpawnMS        float64
+
+	Spawned int
+	Removed int
+}
+
 type holdProbeCarResult struct {
 	shouldHold                bool
 	holdLink                  DebugBlameLink
@@ -797,6 +817,7 @@ type RuntimeState struct {
 	BrakingProfile       BrakingProfile
 	FollowingProfile     FollowingProfile
 	UpdateCarsProfile    UpdateCarsProfile
+	PedestrianProfile    PedestrianProfile
 
 	RouteVisualsMS float64
 	LaneChangesMS  float64
@@ -804,6 +825,7 @@ type RuntimeState struct {
 	BrakingMS      float64
 	FollowMS       float64
 	UpdateCarsMS   float64
+	PedestrianMS   float64
 	StepMS         float64
 
 	PedestrianSpawnTimers map[pedestrianSpawnKey]float32
@@ -1250,10 +1272,12 @@ func (w *World) Step(dt float32) {
 	w.BrakingMS = 0
 	w.FollowMS = 0
 	w.UpdateCarsMS = 0
+	w.PedestrianMS = 0
 	w.StepMS = 0
 	w.BrakingProfile = BrakingProfile{}
 	w.FollowingProfile = FollowingProfile{}
 	w.UpdateCarsProfile = UpdateCarsProfile{}
+	w.PedestrianProfile = PedestrianProfile{}
 	reactionCars := append([]Car(nil), w.Cars...)
 
 	graphStart := time.Now()
@@ -1311,9 +1335,21 @@ func (w *World) Step(dt float32) {
 	simHoldSpeedDecisions := projectBoolSlice(holdSpeedDecisions, split.simSourceIndices)
 	simFollowCaps := projectFloat32Slice(followCaps, split.simSourceIndices)
 
+	pedProfile := PedestrianProfile{
+		Pedestrians: len(w.Pedestrians),
+		Paths:       len(w.PedestrianPaths),
+	}
+	pedestrianStart := time.Now()
+	pedCrossingsStart := time.Now()
 	pedestrianCrossings := computePedestrianCrossings(w.PedestrianPaths, w.Splines)
+	pedProfile.CrossingsMS = sinceMS(pedCrossingsStart)
+	pedProfile.Crossings = len(pedestrianCrossings)
+	pedStoppingStart := time.Now()
 	stoppingPedestrianLights := buildStoppingPedestrianLightsByPath(w.TrafficLights, w.TrafficCycles)
+	pedProfile.StoppingLightsMS = sinceMS(pedStoppingStart)
+	pedBlockedStart := time.Now()
 	pedestrianBlockedBySpline := buildPedestrianBlockedSplineDists(pedestrianCrossings, w.PedestrianPaths, w.Pedestrians, stoppingPedestrianLights)
+	pedProfile.BlockedSplinesMS = sinceMS(pedBlockedStart)
 
 	updateCarsStart := time.Now()
 	simCars := split.simCars
@@ -1331,7 +1367,19 @@ func (w *World) Step(dt float32) {
 	pedestrianCars := make([]Car, 0, len(simCars)+len(externalCars))
 	pedestrianCars = append(pedestrianCars, simCars...)
 	pedestrianCars = append(pedestrianCars, externalCars...)
-	w.Pedestrians, w.PedestrianSpawnTimers = updatePedestrians(w.Pedestrians, w.PedestrianPaths, &w.NextPedestrianID, w.PedestrianSpawnTimers, dt, pedestrianCrossings, pedestrianCars, stoppingPedestrianLights)
+	pedUpdateStart := time.Now()
+	var pedUpdateProfile PedestrianProfile
+	w.Pedestrians, w.PedestrianSpawnTimers, pedUpdateProfile = updatePedestrians(w.Pedestrians, w.PedestrianPaths, &w.NextPedestrianID, w.PedestrianSpawnTimers, dt, pedestrianCrossings, pedestrianCars, stoppingPedestrianLights)
+	pedProfile.UpdateMS = sinceMS(pedUpdateStart)
+	pedProfile.TopologyMS = pedUpdateProfile.TopologyMS
+	pedProfile.TargetsMS = pedUpdateProfile.TargetsMS
+	pedProfile.MovementCapsMS = pedUpdateProfile.MovementCapsMS
+	pedProfile.IntegrateMS = pedUpdateProfile.IntegrateMS
+	pedProfile.SpawnMS = pedUpdateProfile.SpawnMS
+	pedProfile.Spawned = pedUpdateProfile.Spawned
+	pedProfile.Removed = pedUpdateProfile.Removed
+	w.PedestrianMS = sinceMS(pedestrianStart)
+	w.PedestrianProfile = pedProfile
 	assignCarTurnSignals(simCars, allGraph, dt)
 	w.UpdateCarsMS = sinceMS(updateCarsStart)
 	w.Cars = append(simCars, externalCars...)
@@ -1668,41 +1716,139 @@ func computePedestrianCrossings(paths []PedestrianPath, splines []Spline) []pede
 	if len(paths) == 0 || len(splines) == 0 {
 		return nil
 	}
-	var out []pedestrianCrossing
+
+	// Precompute per-spline AABB to skip whole splines that can't possibly
+	// intersect a given path. With 200 paths × 200 splines × 96 segments this
+	// avoids the 3.8M-segment naive cross test.
+	type splineBounds struct {
+		valid              bool
+		minX, minY         float32
+		maxX, maxY         float32
+	}
+	bounds := make([]splineBounds, len(splines))
+	for si := range splines {
+		s := &splines[si]
+		if s.Length <= 0 {
+			continue
+		}
+		b := splineBounds{valid: true}
+		b.minX = s.Samples[0].X
+		b.maxX = s.Samples[0].X
+		b.minY = s.Samples[0].Y
+		b.maxY = s.Samples[0].Y
+		for i := 1; i <= simSamples; i++ {
+			p := s.Samples[i]
+			if p.X < b.minX {
+				b.minX = p.X
+			} else if p.X > b.maxX {
+				b.maxX = p.X
+			}
+			if p.Y < b.minY {
+				b.minY = p.Y
+			} else if p.Y > b.maxY {
+				b.maxY = p.Y
+			}
+		}
+		bounds[si] = b
+	}
+
+	type pathContext struct {
+		valid    bool
+		pathLen  float32
+		minX, minY, maxX, maxY float32
+	}
+	pathCtx := make([]pathContext, len(paths))
 	for pathIdx, p := range paths {
 		diff := vecSub(p.P1, p.P0)
 		pathLen := sqrtf(vectorLengthSq(diff))
 		if pathLen <= 1e-4 {
 			continue
 		}
-		for si := range splines {
-			s := &splines[si]
-			if s.Length <= 0 {
+		ctx := pathContext{valid: true, pathLen: pathLen}
+		ctx.minX, ctx.maxX = p.P0.X, p.P1.X
+		if ctx.minX > ctx.maxX {
+			ctx.minX, ctx.maxX = ctx.maxX, ctx.minX
+		}
+		ctx.minY, ctx.maxY = p.P0.Y, p.P1.Y
+		if ctx.minY > ctx.maxY {
+			ctx.minY, ctx.maxY = ctx.maxY, ctx.minY
+		}
+		pathCtx[pathIdx] = ctx
+	}
+
+	results := make([][]pedestrianCrossing, len(paths))
+	parallelFor(len(paths), func(start, end int) {
+		for pathIdx := start; pathIdx < end; pathIdx++ {
+			ctx := pathCtx[pathIdx]
+			if !ctx.valid {
 				continue
 			}
-			for i := 1; i <= simSamples; i++ {
-				a0 := s.Samples[i-1]
-				a1 := s.Samples[i]
-				splineT, pathT, ok := segmentIntersectionParams(a0, a1, p.P0, p.P1)
-				if !ok {
+			p := paths[pathIdx]
+			var local []pedestrianCrossing
+			for si := range splines {
+				b := bounds[si]
+				if !b.valid {
 					continue
 				}
-				// Treat each spline segment as half-open at its end so an
-				// intersection exactly on a shared sample point is counted
-				// once. The final segment keeps its endpoint.
-				if splineT >= 1 && i < simSamples {
+				// Coarse AABB reject against whole-spline bounds.
+				if b.maxX < ctx.minX || b.minX > ctx.maxX || b.maxY < ctx.minY || b.minY > ctx.maxY {
 					continue
 				}
-				segLen := s.CumLen[i] - s.CumLen[i-1]
-				splineDist := s.CumLen[i-1] + splineT*segLen
-				out = append(out, pedestrianCrossing{
-					SplineID:     s.ID,
-					DistOnSpline: splineDist,
-					PathIndex:    pathIdx,
-					DistOnPath:   pathT * pathLen,
-				})
+				s := &splines[si]
+				prev := s.Samples[0]
+				for i := 1; i <= simSamples; i++ {
+					a0 := prev
+					a1 := s.Samples[i]
+					prev = a1
+					// Per-segment AABB reject against the path's AABB.
+					segMinX, segMaxX := a0.X, a1.X
+					if segMinX > segMaxX {
+						segMinX, segMaxX = segMaxX, segMinX
+					}
+					if segMaxX < ctx.minX || segMinX > ctx.maxX {
+						continue
+					}
+					segMinY, segMaxY := a0.Y, a1.Y
+					if segMinY > segMaxY {
+						segMinY, segMaxY = segMaxY, segMinY
+					}
+					if segMaxY < ctx.minY || segMinY > ctx.maxY {
+						continue
+					}
+					splineT, pathT, ok := segmentIntersectionParams(a0, a1, p.P0, p.P1)
+					if !ok {
+						continue
+					}
+					// Treat each spline segment as half-open at its end so an
+					// intersection exactly on a shared sample point is counted
+					// once. The final segment keeps its endpoint.
+					if splineT >= 1 && i < simSamples {
+						continue
+					}
+					segLen := s.CumLen[i] - s.CumLen[i-1]
+					splineDist := s.CumLen[i-1] + splineT*segLen
+					local = append(local, pedestrianCrossing{
+						SplineID:     s.ID,
+						DistOnSpline: splineDist,
+						PathIndex:    pathIdx,
+						DistOnPath:   pathT * ctx.pathLen,
+					})
+				}
 			}
+			results[pathIdx] = local
 		}
+	})
+
+	total := 0
+	for _, r := range results {
+		total += len(r)
+	}
+	if total == 0 {
+		return nil
+	}
+	out := make([]pedestrianCrossing, 0, total)
+	for _, r := range results {
+		out = append(out, r...)
 	}
 	return out
 }
@@ -2144,14 +2290,20 @@ func spawnPedestrianAtSource(source pedestrianSpawnSource) Pedestrian {
 	}
 }
 
-func updatePedestrians(pedestrians []Pedestrian, paths []PedestrianPath, nextID *int, existingTimers map[pedestrianSpawnKey]float32, dt float32, crossings []pedestrianCrossing, cars []Car, stoppingPedestrianLights map[int][]TrafficLight) ([]Pedestrian, map[pedestrianSpawnKey]float32) {
+func updatePedestrians(pedestrians []Pedestrian, paths []PedestrianPath, nextID *int, existingTimers map[pedestrianSpawnKey]float32, dt float32, crossings []pedestrianCrossing, cars []Car, stoppingPedestrianLights map[int][]TrafficLight) ([]Pedestrian, map[pedestrianSpawnKey]float32, PedestrianProfile) {
+	profile := PedestrianProfile{
+		Pedestrians: len(pedestrians),
+		Paths:       len(paths),
+		Crossings:   len(crossings),
+	}
 	if len(paths) == 0 {
 		if existingTimers != nil {
 			clear(existingTimers)
 		}
-		return pedestrians[:0], existingTimers
+		return pedestrians[:0], existingTimers, profile
 	}
 
+	topologyStart := time.Now()
 	topology := buildPedestrianTopology(paths)
 	active := make([]Pedestrian, 0, len(pedestrians))
 	for _, ped := range pedestrians {
@@ -2174,10 +2326,17 @@ func updatePedestrians(pedestrians []Pedestrian, paths []PedestrianPath, nextID 
 		ped.Distance = clampf(ped.Distance, 0, path.Length)
 		active = append(active, ped)
 	}
+	profile.TopologyMS = sinceMS(topologyStart)
+	preStepActive := len(active)
 
 	if dt > 0 && len(active) > 0 {
+		targetsStart := time.Now()
 		targetSpeeds, targetOffsets := computePedestrianTargets(active, topology)
+		profile.TargetsMS = sinceMS(targetsStart)
+		capsStart := time.Now()
 		movementCaps := computePedestrianMovementCaps(active, topology, crossings, cars, stoppingPedestrianLights)
+		profile.MovementCapsMS = sinceMS(capsStart)
+		integrateStart := time.Now()
 		for i := range active {
 			ped := active[i]
 			var path pedestrianRuntimePath
@@ -2262,8 +2421,12 @@ func updatePedestrians(pedestrians []Pedestrian, paths []PedestrianPath, nextID 
 			}
 		}
 		active = write
+		profile.IntegrateMS = sinceMS(integrateStart)
 	}
+	profile.Removed = preStepActive - len(active)
 
+	spawnStart := time.Now()
+	preSpawnActive := len(active)
 	nextTimers := make(map[pedestrianSpawnKey]float32, len(topology.deadEndSources))
 	for _, source := range topology.deadEndSources {
 		timer, ok := existingTimers[source.key]
@@ -2289,7 +2452,9 @@ func updatePedestrians(pedestrians []Pedestrian, paths []PedestrianPath, nextID 
 		}
 		nextTimers[source.key] = timer
 	}
-	return active, nextTimers
+	profile.Spawned = len(active) - preSpawnActive
+	profile.SpawnMS = sinceMS(spawnStart)
+	return active, nextTimers, profile
 }
 
 type SavedSplineFile struct {

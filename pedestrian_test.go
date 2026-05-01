@@ -13,7 +13,7 @@ func TestUpdatePedestriansSpawnsFromDeadEnds(t *testing.T) {
 		{P0: NewVec2(0, 0), P1: NewVec2(12, 0)},
 	}
 	nextID := 1
-	pedestrians, timers := updatePedestrians(nil, paths, &nextID, nil, pedestrianSpawnIntervalS*(1+pedestrianSpawnJitterFrac)+1, nil, nil, nil)
+	pedestrians, timers, _ := updatePedestrians(nil, paths, &nextID, nil, pedestrianSpawnIntervalS*(1+pedestrianSpawnJitterFrac)+1, nil, nil, nil)
 
 	if len(pedestrians) != 2 {
 		t.Fatalf("expected one pedestrian from each dead end, got %d", len(pedestrians))
@@ -54,7 +54,7 @@ func TestUpdatePedestriansBranchAndDespawnAtDeadEnd(t *testing.T) {
 		},
 	}
 
-	pedestrians, timers := updatePedestrians(pedestrians, paths, nil, nil, 0.3, nil, nil, nil)
+	pedestrians, timers, _ := updatePedestrians(pedestrians, paths, nil, nil, 0.3, nil, nil, nil)
 	if len(pedestrians) != 1 {
 		t.Fatalf("expected pedestrian to survive branch, got %d", len(pedestrians))
 	}
@@ -67,7 +67,7 @@ func TestUpdatePedestriansBranchAndDespawnAtDeadEnd(t *testing.T) {
 	}
 
 	for step := 0; step < 5 && len(pedestrians) > 0; step++ {
-		pedestrians, timers = updatePedestrians(pedestrians, paths, nil, timers, 0.4, nil, nil, nil)
+		pedestrians, timers, _ = updatePedestrians(pedestrians, paths, nil, timers, 0.4, nil, nil, nil)
 	}
 	if len(pedestrians) != 0 {
 		t.Fatalf("expected pedestrian to despawn at branch dead end, still have %d", len(pedestrians))
@@ -103,7 +103,7 @@ func TestUpdatePedestriansSoftAvoidanceKeepsThemMoving(t *testing.T) {
 		},
 	}
 
-	pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.5, nil, nil, nil)
+	pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.5, nil, nil, nil)
 	if len(pedestrians) != 2 {
 		t.Fatalf("expected both pedestrians to remain active, got %d", len(pedestrians))
 	}
@@ -144,7 +144,7 @@ func TestPedestrianPoseTraversesTurnConnector(t *testing.T) {
 	foundMidTransition := false
 	ped := Pedestrian{}
 	for step := 0; step < 12; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.15, nil, nil, nil)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.15, nil, nil, nil)
 		if len(pedestrians) != 1 {
 			t.Fatalf("expected pedestrian to remain active, got %d", len(pedestrians))
 		}
@@ -258,7 +258,7 @@ func TestPedestrianWaitsForCarOccupyingCrossing(t *testing.T) {
 		{ID: 1, PathIndex: 0, Distance: 7.0, Forward: true, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 30; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, cars, nil)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, cars, nil)
 		if len(pedestrians) != 1 {
 			t.Fatalf("expected pedestrian to remain active, got %d", len(pedestrians))
 		}
@@ -288,7 +288,7 @@ func TestPedestrianResumesAfterCarClears(t *testing.T) {
 		{ID: 1, PathIndex: 0, Distance: 7.0, Forward: true, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 15; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, cars, nil)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, cars, nil)
 	}
 	stoppedAt := pedestrians[0].Distance
 	// Car drives away; no longer occupies the crossing.
@@ -296,7 +296,7 @@ func TestPedestrianResumesAfterCarClears(t *testing.T) {
 		{ID: 1, CurrentSplineID: 1, DistanceOnSpline: 30, Length: 4.5, Width: 1.8, Speed: 5.0},
 	}
 	for step := 0; step < 10; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, carsClear, nil)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, crossings, carsClear, nil)
 	}
 	if pedestrians[0].Distance <= stoppedAt+0.5 {
 		t.Fatalf("expected pedestrian to resume moving after car clears, still at %.3f (was %.3f)", pedestrians[0].Distance, stoppedAt)
@@ -347,7 +347,7 @@ func TestRedPedestrianLightStopsMatchingDirection(t *testing.T) {
 		{ID: 1, PathIndex: 0, Distance: 6.0, Forward: true, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 30; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
 	}
 	stopLine := float32(10.0) - pedestrianCrossingStopBufferM
 	if pedestrians[0].Distance > stopLine+0.1 {
@@ -373,7 +373,7 @@ func TestRedPedestrianLightIgnoresOppositeDirection(t *testing.T) {
 	}
 	start := pedestrians[0].Distance
 	for step := 0; step < 12; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
 	}
 	// Backward pedestrians track progress in ped.Distance measured from P1,
 	// so a pedestrian walking unimpeded has Distance increasing over time.
@@ -397,7 +397,7 @@ func TestRedPedestrianLightStopsBackwardDirection(t *testing.T) {
 		{ID: 1, PathIndex: 0, Distance: 6.0, Forward: false, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: -pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 30; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
 	}
 	// Should stop at path-x = DistOnPath + buffer = 10 + 2 = 12, i.e., Distance = 20 - 12 = 8.
 	expectedDistance := float32(20.0) - (10 + pedestrianCrossingStopBufferM)
@@ -425,7 +425,7 @@ func TestGreenPedestrianLightAllowsPassage(t *testing.T) {
 		{ID: 1, PathIndex: 0, Distance: 6.0, Forward: true, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 12; step++ {
-		pedestrians, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
+		pedestrians, _, _ = updatePedestrians(pedestrians, paths, nil, nil, 0.25, nil, nil, stopping)
 	}
 	if pedestrians[0].Distance <= 10 {
 		t.Fatalf("expected pedestrian to cross a green light, got distance %.3f", pedestrians[0].Distance)
@@ -477,7 +477,7 @@ func TestPedestrianQueueSpacingAtStopLine(t *testing.T) {
 		{ID: 3, PathIndex: 0, Distance: 3.5, Forward: true, Speed: 1.4, BaseSpeed: 1.4, Radius: pedestrianRadiusM, LateralOffset: pedestrianPreferredOffsetM},
 	}
 	for step := 0; step < 40; step++ {
-		peds, _ = updatePedestrians(peds, paths, nil, nil, 0.25, nil, nil, stopping)
+		peds, _, _ = updatePedestrians(peds, paths, nil, nil, 0.25, nil, nil, stopping)
 	}
 	if len(peds) != 3 {
 		t.Fatalf("expected all 3 peds to survive, got %d", len(peds))
