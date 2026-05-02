@@ -91,6 +91,7 @@ const (
 	laneChangeSpecMaxFactor   float32 = 1.15
 	maxCarSpeed               float32 = 36.1
 	laneChangeForcedSpeedMPS  float32 = 20.0 / 3.6
+	laneChangeSlowFactor      float32 = 0.5
 	laneChangeForcedDistEnd   float32 = 15.0
 	curveSpeedIntervalM       float32 = 10.0
 	maxLateralAccelMPS2       float32 = 5.0
@@ -4614,6 +4615,19 @@ func appendUpdatedCar(alive []Car, indexRemap []int, originalIndex int, car Car)
 	return append(alive, car)
 }
 
+func forcedLaneChangeApproachSpeedCap(car Car) (float32, bool) {
+	if car.DesiredLaneSplineID < 0 {
+		return 0, false
+	}
+	remaining := maxf(car.DesiredLaneDeadline-car.DistanceOnSpline, 0)
+	profileDecel := car.Accel * 1.5 * 0.9 * laneChangeSlowFactor
+	if profileDecel <= 0 {
+		return laneChangeForcedSpeedMPS, true
+	}
+	cap := sqrtf(laneChangeForcedSpeedMPS*laneChangeForcedSpeedMPS + 2*profileDecel*remaining)
+	return maxf(cap, laneChangeForcedSpeedMPS), true
+}
+
 func applyCurrentSplineSpeedUpdate(car *Car, route Route, currentSpline *Spline, graph *RoadGraph, stoppingLightsBySpline map[int][]TrafficLight, pedestrianBlockedBySpline map[int][]float32, followCap float32, shouldHoldSpeed bool, dt float32) {
 	targetSpeed := car.MaxSpeed * currentSpline.SpeedFactor
 	if currentSpline.SpeedLimitKmh > 0 {
@@ -4636,15 +4650,8 @@ func applyCurrentSplineSpeedUpdate(car *Car, route Route, currentSpline *Spline,
 	if bs := computeBusStopSpeedCap(*car, route, currentSpline, graph); bs < targetSpeed {
 		targetSpeed = bs
 	}
-	if car.DesiredLaneSplineID >= 0 {
-		remaining := car.DesiredLaneDeadline - car.DistanceOnSpline
-		if remaining >= 0 && car.Speed > laneChangeForcedSpeedMPS {
-			normalDecel := car.Accel * 1.5 * 0.9
-			brakingDist := (car.Speed*car.Speed - laneChangeForcedSpeedMPS*laneChangeForcedSpeedMPS) / (2 * normalDecel)
-			if remaining <= brakingDist && targetSpeed > laneChangeForcedSpeedMPS {
-				targetSpeed = laneChangeForcedSpeedMPS
-			}
-		}
+	if flc, ok := forcedLaneChangeApproachSpeedCap(*car); ok && flc < targetSpeed {
+		targetSpeed = flc
 	}
 	if car.Braking {
 		targetSpeed = 0
