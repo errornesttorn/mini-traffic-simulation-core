@@ -96,6 +96,11 @@ const (
 	curveSpeedIntervalM       float32 = 10.0
 	maxLateralAccelMPS2       float32 = 5.0
 	collisionBroadPhaseSlackM float32 = 5.0
+	// Front-pivot heading is derived from frame-to-frame displacement. Below
+	// these floors the displacement vector is mostly sampling noise, so keep
+	// the last stable heading instead of normalizing jitter.
+	frontPivotHeadingMinSpeedMPS     float32 = 0.1
+	frontPivotHeadingMinDisplacement float32 = 0.01
 	// The car is modelled as a front pivot that rides exactly on the spline
 	// offset by LateralOffset, and a rear point dragged behind it at
 	// Length * WheelbaseFrac (Car.RearPivotFrac - Car.FrontPivotFrac).
@@ -4705,10 +4710,12 @@ func settleCarOnCurrentSpline(car Car, currentSpline *Spline, dt float32, sample
 	// Heading tracks the actual direction the front pivot is moving in,
 	// derived from this step's displacement. On a curve this differs from
 	// the body axis (rear→front) because the pivot is travelling along
-	// the spline tangent. Falls back to the spline tangent when the
-	// displacement is too small to be reliable (idle/just-spawned).
+	// the spline tangent. At near-zero speeds, preserve the last stable
+	// direction so tiny front-pivot displacement noise does not jitter the
+	// renderer-facing vector.
 	displacement := vecSub(frontPos, car.PrevFrontPosition)
-	if vectorLengthSq(displacement) > 1e-12 {
+	minHeadingDispSq := frontPivotHeadingMinDisplacement * frontPivotHeadingMinDisplacement
+	if car.Speed >= frontPivotHeadingMinSpeedMPS && vectorLengthSq(displacement) >= minHeadingDispSq {
 		car.Heading = normalize(displacement)
 	} else if vectorLengthSq(car.Heading) <= 1e-9 {
 		car.Heading = tangent
