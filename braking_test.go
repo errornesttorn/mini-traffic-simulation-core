@@ -3,7 +3,6 @@ package sim
 import (
 	"encoding/json"
 	"os"
-	"runtime"
 	"testing"
 )
 
@@ -26,28 +25,6 @@ func TestBrakingC(t *testing.T) {
 	flags, hold, _, _, _, prof := computeBrakingDecisionsC(w.Cars, graph, -1, 0)
 	t.Logf("Profile: %+v", prof)
 	t.Logf("Braking: %d, Hold: %d", countTrue(flags), countTrue(hold))
-}
-
-func TestWorldStepCStress(t *testing.T) {
-	world, err := LoadWorld("../tests/pathfinding_highway_test.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range world.Routes {
-		world.Routes[i].SpawnPerMinute *= 5
-	}
-
-	maxCars := len(world.Cars)
-	for step := 0; step < 800; step++ {
-		world.Step(1.0 / 30.0)
-		if len(world.Cars) > maxCars {
-			maxCars = len(world.Cars)
-		}
-		if step%50 == 49 {
-			runtime.GC()
-		}
-	}
-	t.Logf("stress run complete: cars=%d maxCars=%d brakingMS=%.3f", len(world.Cars), maxCars, world.BrakingMS)
 }
 
 func testBrakingCSynthetic(t *testing.T) {

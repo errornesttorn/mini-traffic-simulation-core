@@ -83,6 +83,12 @@ const (
 	preferenceChangeCooldownS float32 = 7.5
 	overtakeSlowThresholdS    float32 = 2.0
 	overtakeCooldownS         float32 = 3.5
+	laneChangePathDeltaLimitS float32 = 10.0
+	laneChangeSpecRefSpeedMPS float32 = 30.0
+	laneChangeSpecRefAccel    float32 = 3.0
+	laneChangeSpecBias        float32 = 0.35
+	laneChangeSpecMinFactor   float32 = 0.85
+	laneChangeSpecMaxFactor   float32 = 1.15
 	maxCarSpeed               float32 = 36.1
 	laneChangeForcedSpeedMPS  float32 = 20.0 / 3.6
 	laneChangeForcedDistEnd   float32 = 15.0
@@ -2796,13 +2802,13 @@ func LoadWorld(path string) (*World, error) {
 			LaneChangeSplineID:   -1,
 			AfterSplineID:        -1,
 			DesiredLaneSplineID:  -1,
-			PreferenceCooldown:   rand.Float32() * preferenceChangeCooldownS,
-			OvertakeCooldown:     rand.Float32() * overtakeCooldownS,
 			VehicleKind:          vehicleKind,
 			NextBusStopIndex:     entry.NextBusStopIndex,
 			BusStopTimer:         entry.BusStopTimer,
 			BusStopDuration:      entry.BusStopDuration,
 		}
+		car.PreferenceCooldown = rand.Float32() * preferenceLaneChangeCooldownS(car)
+		car.OvertakeCooldown = rand.Float32() * overtakeLaneChangeCooldownS(car)
 		if car.CurveSpeedMultiplier == 0 {
 			car.CurveSpeedMultiplier = randRange(0.8, 1.2)
 		}
@@ -3234,10 +3240,10 @@ func spawnVehicle(carID int, route Route, splines []Spline) Car {
 		LaneChangeSplineID:   -1,
 		AfterSplineID:        -1,
 		DesiredLaneSplineID:  -1,
-		PreferenceCooldown:   rand.Float32() * preferenceChangeCooldownS,
-		OvertakeCooldown:     rand.Float32() * overtakeCooldownS,
 		VehicleKind:          route.VehicleKind,
 	}
+	car.PreferenceCooldown = rand.Float32() * preferenceLaneChangeCooldownS(car)
+	car.OvertakeCooldown = rand.Float32() * overtakeLaneChangeCooldownS(car)
 	wbFrac := car.WheelbaseFrac()
 	if spline, ok := findSplinePtrByID(splines, route.StartSplineID); ok {
 		frontPos, tangent := sampleSplineAtDistance(spline, 0)
@@ -4762,7 +4768,7 @@ func transitionCarToNextSpline(car *Car, route Route, graph *RoadGraph) bool {
 			if curOK {
 				for _, cid := range newSpline.HardCoupledIDs {
 					coupledTime, coupledOK := PathCostToDestinationWithGraph(graph, cid, car.DestinationSplineID, car.VehicleKind)
-					if coupledOK && curTime-coupledTime >= 20.0 {
+					if coupledOK && curTime-coupledTime >= laneChangePathDeltaLimitS {
 						car.DesiredLaneSplineID = cid
 						car.DesiredLaneDeadline = maxf(newSpline.Length-laneChangeForcedDistEnd, 0)
 						break
@@ -5104,6 +5110,40 @@ func EffectiveMaxSpeedMPS(spline Spline) float32 {
 	return maxCarSpeed * spline.SpeedFactor
 }
 
+func laneChangeSpeedSpecFactor(car Car) float32 {
+	if car.MaxSpeed <= 0 {
+		return 1
+	}
+	return clampf(car.MaxSpeed/laneChangeSpecRefSpeedMPS, laneChangeSpecMinFactor, laneChangeSpecMaxFactor)
+}
+
+func laneChangePerformanceSpecFactor(car Car) float32 {
+	speedFactor := laneChangeSpeedSpecFactor(car)
+	accelFactor := float32(1)
+	if car.Accel > 0 {
+		accelFactor = clampf(car.Accel/laneChangeSpecRefAccel, laneChangeSpecMinFactor, laneChangeSpecMaxFactor)
+	}
+	return (speedFactor + accelFactor) * 0.5
+}
+
+func preferenceLaneChangeCooldownS(car Car) float32 {
+	speedFactor := laneChangeSpeedSpecFactor(car)
+	multiplier := clampf(1+laneChangeSpecBias*(speedFactor-1), laneChangeSpecMinFactor, laneChangeSpecMaxFactor)
+	return preferenceChangeCooldownS * multiplier
+}
+
+func overtakeLaneChangeCooldownS(car Car) float32 {
+	performanceFactor := laneChangePerformanceSpecFactor(car)
+	multiplier := clampf(1-laneChangeSpecBias*(performanceFactor-1), laneChangeSpecMinFactor, laneChangeSpecMaxFactor)
+	return overtakeCooldownS * multiplier
+}
+
+func overtakeSlowThresholdForCar(car Car) float32 {
+	performanceFactor := laneChangePerformanceSpecFactor(car)
+	multiplier := clampf(1-laneChangeSpecBias*(performanceFactor-1), laneChangeSpecMinFactor, laneChangeSpecMaxFactor)
+	return overtakeSlowThresholdS * multiplier
+}
+
 func FindForcedLaneChangePathWithGraph(graph *RoadGraph, currentSplineID, destSplineID int, vehicleKind VehicleKind) (nextSplineID, desiredSplineID int, ok bool) {
 	currentSpline, found := graph.splinePtrByID(currentSplineID)
 	if !found {
@@ -5231,9 +5271,9 @@ func buildLaneChangeBridge(car *Car, destSplineID int, splines []Spline, splineI
 //     the only route to the destination runs through a coupled sibling
 //     lane). If the forced deadline has arrived, the bridge is built even
 //     if it's geometrically tight.
-//  2. Preference-based: every preferenceChangeCooldownS seconds, look at
-//     HardCoupled+SoftCoupled siblings with a lower LanePreference and
-//     consider switching if the path cost penalty is bounded.
+//  2. Preference-based: on a spec-biased cooldown, look at HardCoupled+
+//     SoftCoupled siblings with a lower LanePreference and consider switching
+//     if the path cost penalty is less than laneChangePathDeltaLimitS.
 //  3. Overtake: if the car has been stuck below its preferred speed for
 //     longer than overtakeSlowThresholdS behind a slower leader, try to
 //     jump to a sibling lane.
@@ -5288,14 +5328,14 @@ func computeLaneChanges(cars []Car, splines []Spline, lcs []Spline, nextID *int,
 
 		car.PreferenceCooldown -= dt
 		if car.PreferenceCooldown <= 0 {
-			car.PreferenceCooldown = preferenceChangeCooldownS
+			car.PreferenceCooldown = preferenceLaneChangeCooldownS(*car)
 			curPrefTime, curPrefTimeOk := PathCostToDestinationWithGraph(graph, car.CurrentSplineID, car.DestinationSplineID, car.VehicleKind)
 			for _, destID := range findBetterPreferenceLaneCandidates(*car, splines, splineIndexByID) {
 				destTime, pathOk := PathCostToDestinationWithGraph(graph, destID, car.DestinationSplineID, car.VehicleKind)
 				if !pathOk {
 					continue
 				}
-				if curPrefTimeOk && destTime-curPrefTime > 20.0 {
+				if curPrefTimeOk && destTime-curPrefTime >= laneChangePathDeltaLimitS {
 					continue
 				}
 				srcIdx, srcOk := splineIndexByID[car.CurrentSplineID]
@@ -5316,15 +5356,15 @@ func computeLaneChanges(cars []Car, splines []Spline, lcs []Spline, nextID *int,
 
 		car.OvertakeCooldown -= dt
 		leaderSpeed, leaderFound := nearestLeaderSpeed(i, cars, carsBySpline, poses)
-		if car.SlowedTimer > overtakeSlowThresholdS && car.OvertakeCooldown <= 0 && (!leaderFound || leaderSpeed <= car.Speed) {
-			car.OvertakeCooldown = overtakeCooldownS
+		if car.SlowedTimer > overtakeSlowThresholdForCar(*car) && car.OvertakeCooldown <= 0 && (!leaderFound || leaderSpeed <= car.Speed) {
+			car.OvertakeCooldown = overtakeLaneChangeCooldownS(*car)
 			curOvertakeTime, curOvertakeTimeOk := PathCostToDestinationWithGraph(graph, car.CurrentSplineID, car.DestinationSplineID, car.VehicleKind)
 			for _, destID := range findOvertakeLaneCandidates(*car, splines, splineIndexByID) {
 				destTime, pathOk := PathCostToDestinationWithGraph(graph, destID, car.DestinationSplineID, car.VehicleKind)
 				if !pathOk {
 					continue
 				}
-				if curOvertakeTimeOk && destTime-curOvertakeTime > 20.0 {
+				if curOvertakeTimeOk && destTime-curOvertakeTime >= laneChangePathDeltaLimitS {
 					continue
 				}
 				srcIdx, srcOk := splineIndexByID[car.CurrentSplineID]
@@ -5338,7 +5378,7 @@ func computeLaneChanges(cars []Car, splines []Spline, lcs []Spline, nextID *int,
 				}
 				if newLcs, ok := buildLaneChangeBridge(car, destID, splines, splineIndexByID, lcs, nextID, false); ok {
 					lcs = newLcs
-					car.PreferenceCooldown = preferenceChangeCooldownS
+					car.PreferenceCooldown = preferenceLaneChangeCooldownS(*car)
 					car.SlowedTimer = 0
 					break
 				}
