@@ -39,7 +39,7 @@ typedef struct { float x, y; } CVec2;
 typedef struct {
     int id, priority, bus_only;
     CVec2 p0, p1, p2, p3;
-    float length, speed_factor;
+    float length, speed_factor, speed_limit_kmh;
     CVec2 samples[SIM_SAMPLE_COUNT];
     float cum_len[SIM_SAMPLE_COUNT];
     CVec2 sample_tangents[SIM_SAMPLE_COUNT];
@@ -52,7 +52,7 @@ typedef struct {
     int prev_spline_ids[2];
     float distance_on_spline;
     CVec2 rear_position;
-    float lateral_offset, speed, max_speed, accel, length, width;
+    float lateral_offset, speed, max_speed, accel, length, width, curve_speed_multiplier;
     int vehicle_kind, lane_changing, lane_change_spline_id;
     int after_spline_id;
     float after_spline_dist;

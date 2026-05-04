@@ -263,11 +263,11 @@ type Car struct {
 	// code (future textures/meshes) and for round-trip save/load.
 	ModelID string
 
-	CurrentSplineID      int
-	DestinationSplineID  int
-	PrevSplineIDs        [2]int
-	DistanceOnSpline     float32
-	RearPosition         Vec2
+	CurrentSplineID     int
+	DestinationSplineID int
+	PrevSplineIDs       [2]int
+	DistanceOnSpline    float32
+	RearPosition        Vec2
 	// PrevFrontPosition is the front pivot position from the previous sim
 	// step. Combined with the current front pivot it yields the actual
 	// direction the pivot is travelling in (which differs from the body
@@ -1747,9 +1747,9 @@ func computePedestrianCrossings(paths []PedestrianPath, splines []Spline) []pede
 	// intersect a given path. With 200 paths × 200 splines × 96 segments this
 	// avoids the 3.8M-segment naive cross test.
 	type splineBounds struct {
-		valid              bool
-		minX, minY         float32
-		maxX, maxY         float32
+		valid      bool
+		minX, minY float32
+		maxX, maxY float32
 	}
 	bounds := make([]splineBounds, len(splines))
 	for si := range splines {
@@ -1779,8 +1779,8 @@ func computePedestrianCrossings(paths []PedestrianPath, splines []Spline) []pede
 	}
 
 	type pathContext struct {
-		valid    bool
-		pathLen  float32
+		valid                  bool
+		pathLen                float32
 		minX, minY, maxX, maxY float32
 	}
 	pathCtx := make([]pathContext, len(paths))
@@ -3252,7 +3252,7 @@ func spawnVehicle(carID int, route Route, splines []Spline) Car {
 		Accel:                model.Accel,
 		Length:               model.LengthM / metersPerUnit,
 		Width:                model.WidthM / metersPerUnit,
-		CurveSpeedMultiplier: model.CurveSpeedMultiplier,
+		CurveSpeedMultiplier: model.CurveSpeedMultiplier + randRange(-0.05, 0.05),
 		FrontPivotFrac:       model.FrontPivotFrac,
 		RearPivotFrac:        model.RearPivotFrac,
 		Color:                route.Color,
@@ -3890,6 +3890,9 @@ func computeHoldProbeResultForCar(i int, cars []Car, graph *RoadGraph, flags []b
 	targetSpeed := car.MaxSpeed
 	if currentSpline, ok := graph.splinePtrByID(car.CurrentSplineID); ok {
 		targetSpeed *= currentSpline.SpeedFactor
+		if limitMPS, ok := perceivedSpeedLimitMPS(car, currentSpline); ok && limitMPS < targetSpeed {
+			targetSpeed = limitMPS
+		}
 	}
 	fasterCar.Speed = minf(targetSpeed, car.Speed+driverReactionDelayMaxS*fasterCar.Accel)
 	if fasterCar.Speed <= car.Speed+1e-4 {
@@ -3990,6 +3993,9 @@ func shouldBrakeForBlamedConflicts(carIndex int, cars []Car, graph *RoadGraph, p
 	}
 
 	targetSpeed := car.MaxSpeed * currentSpline.SpeedFactor
+	if limitMPS, ok := perceivedSpeedLimitMPS(car, currentSpline); ok && limitMPS < targetSpeed {
+		targetSpeed = limitMPS
+	}
 	if car.Speed >= targetSpeed-accelEscapeLookaheadSecs*car.Accel {
 		return true
 	}
@@ -4654,6 +4660,17 @@ func forcedLaneChangeApproachSpeedCap(car Car) (float32, bool) {
 	return maxf(cap, laneChangeForcedSpeedMPS), true
 }
 
+func perceivedSpeedLimitMPS(car Car, spline *Spline) (float32, bool) {
+	if spline == nil || spline.SpeedLimitKmh <= 0 {
+		return 0, false
+	}
+	factor := car.CurveSpeedMultiplier + 0.1
+	if factor < 0 {
+		factor = 0
+	}
+	return spline.SpeedLimitKmh * factor / 3.6, true
+}
+
 func requestedDriverReactionMode(shouldBrake, shouldHoldSpeed bool) carReactionMode {
 	if shouldBrake {
 		return carReactionBrake
@@ -4740,10 +4757,8 @@ func resetDriverReactionDelay(car *Car) {
 
 func applyCurrentSplineSpeedUpdate(car *Car, route Route, currentSpline *Spline, graph *RoadGraph, stoppingLightsBySpline map[int][]TrafficLight, pedestrianBlockedBySpline map[int][]float32, followCap float32, shouldHoldSpeed bool, dt float32) {
 	targetSpeed := car.MaxSpeed * currentSpline.SpeedFactor
-	if currentSpline.SpeedLimitKmh > 0 {
-		if limitMPS := currentSpline.SpeedLimitKmh / 3.6; limitMPS < targetSpeed {
-			targetSpeed = limitMPS
-		}
+	if limitMPS, ok := perceivedSpeedLimitMPS(*car, currentSpline); ok && limitMPS < targetSpeed {
+		targetSpeed = limitMPS
 	}
 	if cs := lookupCurveSpeed(currentSpline, car.DistanceOnSpline) * car.CurveSpeedMultiplier; cs < targetSpeed {
 		targetSpeed = cs
@@ -5006,10 +5021,8 @@ func updateCars(cars []Car, routes []Route, graph *RoadGraph, brakingDecisions [
 			const frustrateThreshMPS = 10.0 / 3.6
 			if !shouldBrake && followCap < float32(math.MaxFloat32) {
 				preferredSpeed := car.MaxSpeed * currentSpline.SpeedFactor
-				if currentSpline.SpeedLimitKmh > 0 {
-					if limitMPS := currentSpline.SpeedLimitKmh / 3.6; limitMPS < preferredSpeed {
-						preferredSpeed = limitMPS
-					}
+				if limitMPS, ok := perceivedSpeedLimitMPS(car, currentSpline); ok && limitMPS < preferredSpeed {
+					preferredSpeed = limitMPS
 				}
 				if cs := lookupCurveSpeed(currentSpline, car.DistanceOnSpline) * car.CurveSpeedMultiplier; cs < preferredSpeed {
 					preferredSpeed = cs

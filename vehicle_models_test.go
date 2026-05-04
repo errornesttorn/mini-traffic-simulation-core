@@ -85,8 +85,9 @@ func TestSpawnVehicleInheritsFromModel(t *testing.T) {
 	if absf(car.Accel-model.Accel) > 1e-3 {
 		t.Fatalf("car accel %.3f does not match model %.3f", car.Accel, model.Accel)
 	}
-	if absf(car.CurveSpeedMultiplier-model.CurveSpeedMultiplier) > 1e-3 {
-		t.Fatalf("curve multiplier %.3f does not match model %.3f", car.CurveSpeedMultiplier, model.CurveSpeedMultiplier)
+	diff := car.CurveSpeedMultiplier - model.CurveSpeedMultiplier
+	if diff < -0.05 || diff > 0.05 {
+		t.Fatalf("curve multiplier %.3f is not within jitter range of model %.3f", car.CurveSpeedMultiplier, model.CurveSpeedMultiplier)
 	}
 	if absf(car.FrontPivotFrac-model.FrontPivotFrac) > 1e-6 {
 		t.Fatalf("front pivot frac %.4f does not match model %.4f", car.FrontPivotFrac, model.FrontPivotFrac)
@@ -102,6 +103,21 @@ func TestSpawnVehicleInheritsFromModel(t *testing.T) {
 	}
 	if model.Trailer == nil && car.Trailer.HasTrailer {
 		t.Fatal("spawned car has a trailer but its model has none")
+	}
+}
+
+func TestPerceivedSpeedLimitUsesCurveMultiplierBias(t *testing.T) {
+	spline := NewSpline(1, NewVec2(0, 0), NewVec2(5, 0), NewVec2(10, 0), NewVec2(15, 0))
+	spline.SpeedLimitKmh = 50
+	car := Car{CurveSpeedMultiplier: 1.1}
+
+	limit, ok := perceivedSpeedLimitMPS(car, &spline)
+	if !ok {
+		t.Fatal("expected perceived speed limit")
+	}
+	want := float32(60.0 / 3.6)
+	if absf(limit-want) > 1e-4 {
+		t.Fatalf("perceived limit %.4f m/s, want %.4f m/s", limit, want)
 	}
 }
 

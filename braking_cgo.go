@@ -132,6 +132,7 @@ func buildBrakingCGraphCache(graph *RoadGraph) *brakingCGraphCache {
 		cs.p3 = C.CVec2{C.float(sp.P3.X), C.float(sp.P3.Y)}
 		cs.length = C.float(sp.Length)
 		cs.speed_factor = C.float(sp.SpeedFactor)
+		cs.speed_limit_kmh = C.float(sp.SpeedLimitKmh)
 		for j := 0; j < simSamples+1; j++ {
 			cs.samples[j] = C.CVec2{C.float(sp.Samples[j].X), C.float(sp.Samples[j].Y)}
 			cs.cum_len[j] = C.float(sp.CumLen[j])
@@ -304,6 +305,7 @@ func computeBrakingDecisionsC(cars []Car, graph *RoadGraph, debugSelectedCar int
 		cc.accel = C.float(c.Accel)
 		cc.length = C.float(c.Length)
 		cc.width = C.float(c.Width)
+		cc.curve_speed_multiplier = C.float(c.CurveSpeedMultiplier)
 		cc.vehicle_kind = C.int(c.VehicleKind)
 		cc.lane_changing = boolToInt(c.LaneChanging)
 		cc.lane_change_spline_id = C.int(c.LaneChangeSplineID)

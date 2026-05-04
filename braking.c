@@ -25,6 +25,13 @@ static inline float minf(float a, float b) { return a < b ? a : b; }
 static inline float maxf(float a, float b) { return a > b ? a : b; }
 static inline float absf(float v) { return v < 0 ? -v : v; }
 
+static inline float perceived_speed_limit_mps(const CCar *car, const CSpline *sp) {
+    if (!car || !sp || sp->speed_limit_kmh <= 0) return FLT_MAX;
+    float factor = car->curve_speed_multiplier + 0.1f;
+    if (factor < 0) factor = 0;
+    return sp->speed_limit_kmh * factor / 3.6f;
+}
+
 static inline CVec2 vnorm(CVec2 v) {
     float ls = v.x*v.x + v.y*v.y;
     if (ls <= 1e-9f) return cv2(1, 0);
@@ -1084,7 +1091,8 @@ static int should_brake_for_blamed(int ci, const CCar *cars, int num_cars,
     const CCar *car = &cars[ci];
     const CSpline *cur_sp = graph_spline_by_id(g, car->current_spline_id);
     if (!cur_sp) return 1;
-    float target_speed = car->max_speed * cur_sp->speed_factor;
+    float target_speed = minf(car->max_speed * cur_sp->speed_factor,
+                              perceived_speed_limit_mps(car, cur_sp));
     if (car->speed >= target_speed - ACCEL_ESC_LOOK_S * car->accel)
         return 1;
 
@@ -1179,7 +1187,8 @@ static HoldResult compute_hold_for_car(int ci, const CCar *cars, int num_cars,
     const CCar *car = &cars[ci];
     CCar faster = *car;
     const CSpline *cur_sp = graph_spline_by_id(g, car->current_spline_id);
-    float target_speed = cur_sp ? car->max_speed * cur_sp->speed_factor : car->max_speed;
+    float target_speed = cur_sp ? minf(car->max_speed * cur_sp->speed_factor,
+                                       perceived_speed_limit_mps(car, cur_sp)) : car->max_speed;
     faster.speed = minf(target_speed, car->speed + DRIVER_REACTION_DELAY_MAX_S * faster.accel);
     if (faster.speed <= car->speed + 1e-4f) return r;
 
