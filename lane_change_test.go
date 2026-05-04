@@ -88,3 +88,39 @@ func TestForcedLaneChangeSpeedUpdateStartsSlowingBeforeOldBrakePoint(t *testing.
 		t.Fatalf("expected desired-lane car to start slowing before old brake point, got speed %.3f", car.Speed)
 	}
 }
+
+func TestLaneChangeLandingSafetyAccountsForRearReactionDelay(t *testing.T) {
+	const p3Dist float32 = 80
+	T := 2 * laneChangeHalfSecs
+	switching := Car{ID: 1, Length: 4.5, Speed: 10, Accel: 3}
+	rear := Car{ID: 2, CurrentSplineID: 7, Length: 4.5, Speed: 14, Accel: 3}
+	extra := laneChangeReactionClosingExtra(rear.Speed-switching.Speed, rear.Accel)
+
+	rear.DistanceOnSpline = p3Dist - switching.Length - laneChangeSafetyMarginM - extra*0.5 - rear.Speed*T
+	if isLaneChangeLandingSafe(p3Dist, 7, switching, []Car{switching, rear}) {
+		t.Fatalf("expected rear target-lane car inside reaction buffer to block lane change")
+	}
+
+	rear.DistanceOnSpline = p3Dist - switching.Length - laneChangeSafetyMarginM - extra - 0.25 - rear.Speed*T
+	if !isLaneChangeLandingSafe(p3Dist, 7, switching, []Car{switching, rear}) {
+		t.Fatalf("expected rear target-lane car outside reaction buffer to allow lane change")
+	}
+}
+
+func TestLaneChangeLandingSafetyAccountsForFrontReactionDelay(t *testing.T) {
+	const p3Dist float32 = 80
+	T := 2 * laneChangeHalfSecs
+	switching := Car{ID: 1, Length: 4.5, Speed: 14, Accel: 3}
+	front := Car{ID: 2, CurrentSplineID: 7, Length: 4.5, Speed: 10, Accel: 3}
+	extra := laneChangeReactionClosingExtra(switching.Speed-front.Speed, switching.Accel)
+
+	front.DistanceOnSpline = p3Dist + front.Length + laneChangeSafetyMarginM + extra*0.5 - front.Speed*T
+	if isLaneChangeLandingSafe(p3Dist, 7, switching, []Car{switching, front}) {
+		t.Fatalf("expected front target-lane car inside reaction buffer to block lane change")
+	}
+
+	front.DistanceOnSpline = p3Dist + front.Length + laneChangeSafetyMarginM + extra + 0.25 - front.Speed*T
+	if !isLaneChangeLandingSafe(p3Dist, 7, switching, []Car{switching, front}) {
+		t.Fatalf("expected front target-lane car outside reaction buffer to allow lane change")
+	}
+}

@@ -1158,9 +1158,9 @@ typedef struct {
     int hold_checks, hold_hits, stat_checks, stat_hits;
 } HoldResult;
 
-/* Hold-speed probe: for a car that is NOT braking, would accelerating by
- * 0.25s * accel cause a new conflict? If yes, set should_hold: the car
- * keeps its current speed but doesn't accelerate further. This is what
+/* Hold-speed probe: for a car that is NOT braking, would accelerating through
+ * the reaction-delay window cause a new conflict? If yes, set should_hold:
+ * the car keeps its current speed but doesn't accelerate further. This is what
  * keeps a following car from closing a gap that it's about to need. */
 static HoldResult compute_hold_for_car(int ci, const CCar *cars, int num_cars,
                                        const CGraph *g, const CRouteTree *trees,
@@ -1178,7 +1178,9 @@ static HoldResult compute_hold_for_car(int ci, const CCar *cars, int num_cars,
 
     const CCar *car = &cars[ci];
     CCar faster = *car;
-    faster.speed += 0.25f * faster.accel;
+    const CSpline *cur_sp = graph_spline_by_id(g, car->current_spline_id);
+    float target_speed = cur_sp ? car->max_speed * cur_sp->speed_factor : car->max_speed;
+    faster.speed = minf(target_speed, car->speed + DRIVER_REACTION_DELAY_MAX_S * faster.accel);
     if (faster.speed <= car->speed + 1e-4f) return r;
 
     /* Pre-filter: does the car's existing AABB overlap any neighbor? */

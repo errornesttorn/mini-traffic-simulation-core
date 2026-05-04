@@ -17,6 +17,7 @@
 #define PREDICTION_STEP_S    0.15f
 #define BLAME_ANGLE_THRESH   45.0f
 #define BRAKE_DECEL_MULT     2.5f
+#define DRIVER_REACTION_DELAY_MAX_S 0.5f
 #define ACCEL_ESC_LOOK_S     1.0f
 #define ACCEL_ESC_SHORT_S    0.25f
 #define ACCEL_ESC_MED_S      0.5f

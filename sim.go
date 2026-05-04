@@ -31,6 +31,14 @@ const (
 	CarControlExternal
 )
 
+type carReactionMode uint8
+
+const (
+	carReactionAccelerate carReactionMode = iota
+	carReactionHold
+	carReactionBrake
+)
+
 // TurnSignalState is what the simulator decides about a car's indicator: off,
 // flashing left, or flashing right. The sim only records direction — the
 // blinking cadence is a display concern (the sim is time-step/pause aware and
@@ -55,6 +63,8 @@ const (
 	predictionStepSeconds    float32 = 0.15
 	blameAngleThresholdDeg   float32 = 45.0
 	brakeDecelMultiplier     float32 = 2.5
+	driverReactionDelayMinS  float32 = 0.2
+	driverReactionDelayMaxS  float32 = 0.5
 )
 
 const (
@@ -93,6 +103,7 @@ const (
 	laneChangeForcedSpeedMPS  float32 = 20.0 / 3.6
 	laneChangeSlowFactor      float32 = 0.5
 	laneChangeForcedDistEnd   float32 = 15.0
+	laneChangeSafetyMarginM   float32 = 2.0
 	curveSpeedIntervalM       float32 = 10.0
 	maxLateralAccelMPS2       float32 = 5.0
 	collisionBroadPhaseSlackM float32 = 5.0
@@ -283,6 +294,9 @@ type Car struct {
 	Color                Color
 	Braking              bool
 	SoftSlowing          bool
+	driverReactionMode   carReactionMode
+	driverReactionTimer  float32
+	driverReactionSerial uint32
 
 	LaneChanging        bool
 	LaneChangeSplineID  int
@@ -3280,6 +3294,9 @@ func beginBusStopDwell(route Route, car *Car) bool {
 	}
 	stop := route.BusStops[car.NextBusStopIndex]
 	car.Speed = 0
+	car.Braking = false
+	car.SoftSlowing = false
+	resetDriverReactionDelay(car)
 	car.BusStopDuration = randRange(busStopMinDwellSeconds, busStopMaxDwellSeconds)
 	car.BusStopTimer = car.BusStopDuration
 	car.NextBusStopIndex++
@@ -3870,7 +3887,11 @@ func computeHoldProbeResultForCar(i int, cars []Car, graph *RoadGraph, flags []b
 
 	car := cars[i]
 	fasterCar := car
-	fasterCar.Speed += 0.25 * fasterCar.Accel
+	targetSpeed := car.MaxSpeed
+	if currentSpline, ok := graph.splinePtrByID(car.CurrentSplineID); ok {
+		targetSpeed *= currentSpline.SpeedFactor
+	}
+	fasterCar.Speed = minf(targetSpeed, car.Speed+driverReactionDelayMaxS*fasterCar.Accel)
 	if fasterCar.Speed <= car.Speed+1e-4 {
 		return result
 	}
@@ -4633,6 +4654,90 @@ func forcedLaneChangeApproachSpeedCap(car Car) (float32, bool) {
 	return maxf(cap, laneChangeForcedSpeedMPS), true
 }
 
+func requestedDriverReactionMode(shouldBrake, shouldHoldSpeed bool) carReactionMode {
+	if shouldBrake {
+		return carReactionBrake
+	}
+	if shouldHoldSpeed {
+		return carReactionHold
+	}
+	return carReactionAccelerate
+}
+
+func driverReactionModeIsBrakeOrHold(mode carReactionMode) bool {
+	return mode == carReactionBrake || mode == carReactionHold
+}
+
+func driverReactionModeDecisions(mode carReactionMode) (bool, bool) {
+	return mode == carReactionBrake, mode == carReactionHold
+}
+
+func nextDriverReactionDelay(car *Car) float32 {
+	span := driverReactionDelayMaxS - driverReactionDelayMinS
+	if span <= 0 {
+		return maxf(driverReactionDelayMinS, 0)
+	}
+	car.driverReactionSerial++
+	x := uint32(car.ID)
+	x ^= uint32(car.CurrentSplineID) * 0x85ebca6b
+	x ^= car.driverReactionSerial * 0xc2b2ae35
+	x ^= math.Float32bits(car.DistanceOnSpline)
+	x ^= x >> 16
+	x *= 0x7feb352d
+	x ^= x >> 15
+	x *= 0x846ca68b
+	x ^= x >> 16
+	unit := float32(x&0x00ffffff) / float32(1<<24)
+	return driverReactionDelayMinS + unit*span
+}
+
+func applyDriverReactionDelay(car *Car, requested carReactionMode, dt float32) carReactionMode {
+	if car == nil {
+		return requested
+	}
+	if requested > carReactionBrake {
+		requested = carReactionAccelerate
+	}
+	current := car.driverReactionMode
+	if current > carReactionBrake {
+		current = carReactionAccelerate
+		car.driverReactionMode = current
+	}
+	if requested == current {
+		car.driverReactionTimer = 0
+		return current
+	}
+	if driverReactionModeIsBrakeOrHold(current) && driverReactionModeIsBrakeOrHold(requested) {
+		car.driverReactionMode = requested
+		car.driverReactionTimer = 0
+		return requested
+	}
+
+	if car.driverReactionTimer <= 0 {
+		car.driverReactionTimer = nextDriverReactionDelay(car)
+	}
+	if dt > 0 {
+		car.driverReactionTimer -= dt
+	}
+	if car.driverReactionTimer <= 0 {
+		car.driverReactionTimer = 0
+		car.driverReactionMode = requested
+		return requested
+	}
+
+	if current == carReactionAccelerate {
+		car.driverReactionMode = carReactionAccelerate
+		return carReactionAccelerate
+	}
+	car.driverReactionMode = carReactionHold
+	return carReactionHold
+}
+
+func resetDriverReactionDelay(car *Car) {
+	car.driverReactionMode = carReactionAccelerate
+	car.driverReactionTimer = 0
+}
+
 func applyCurrentSplineSpeedUpdate(car *Car, route Route, currentSpline *Spline, graph *RoadGraph, stoppingLightsBySpline map[int][]TrafficLight, pedestrianBlockedBySpline map[int][]float32, followCap float32, shouldHoldSpeed bool, dt float32) {
 	targetSpeed := car.MaxSpeed * currentSpline.SpeedFactor
 	if currentSpline.SpeedLimitKmh > 0 {
@@ -4874,13 +4979,16 @@ func updateCars(cars []Car, routes []Route, graph *RoadGraph, brakingDecisions [
 				car.Speed = 0
 				car.Braking = false
 				car.SoftSlowing = false
+				resetDriverReactionDelay(&car)
 				result.status = updateCarsFastDwellParked
 				result.car = car
 				continue
 			}
 
-			shouldBrake := i < len(brakingDecisions) && brakingDecisions[i]
-			shouldHoldSpeed := !shouldBrake && i < len(holdSpeedDecisions) && holdSpeedDecisions[i]
+			rawShouldBrake := i < len(brakingDecisions) && brakingDecisions[i]
+			rawShouldHoldSpeed := !rawShouldBrake && i < len(holdSpeedDecisions) && holdSpeedDecisions[i]
+			reactionMode := applyDriverReactionDelay(&car, requestedDriverReactionMode(rawShouldBrake, rawShouldHoldSpeed), dt)
+			shouldBrake, shouldHoldSpeed := driverReactionModeDecisions(reactionMode)
 			car.Braking = shouldBrake
 
 			followCap := float32(math.MaxFloat32)
@@ -5181,11 +5289,19 @@ func FindForcedLaneChangePathWithGraph(graph *RoadGraph, currentSplineID, destSp
 }
 
 func laneChangeLandingDist(car Car, srcSpline, destSpline Spline) (float32, bool) {
-	if car.Speed < laneChangeMinSpeed {
+	return laneChangeLandingDistForMode(car, srcSpline, destSpline, false)
+}
+
+func laneChangeLandingDistForMode(car Car, srcSpline, destSpline Spline, forced bool) (float32, bool) {
+	effectiveSpeed := car.Speed
+	if forced && effectiveSpeed < laneChangeMinSpeed {
+		effectiveSpeed = laneChangeMinSpeed
+	}
+	if effectiveSpeed < laneChangeMinSpeed {
 		return 0, false
 	}
 	carPos, carHeading := sampleSplineAtDistance(&srcSpline, car.DistanceOnSpline)
-	halfDist := car.Speed * laneChangeHalfSecs
+	halfDist := effectiveSpeed * laneChangeHalfSecs
 	p1 := vecAdd(carPos, vecScale(carHeading, halfDist))
 	_, crossDist := nearestSampleWithDist(&destSpline, p1)
 	if crossDist == 0 || destSpline.Length-crossDist < halfDist {
@@ -5199,9 +5315,16 @@ func laneChangeLandingDist(car Car, srcSpline, destSpline Spline) (float32, bool
 	return p3Dist, true
 }
 
+func laneChangeReactionClosingExtra(closingSpeed, accel float32) float32 {
+	delay := driverReactionDelayMaxS
+	if delay <= 0 {
+		return 0
+	}
+	return maxf(closingSpeed, 0)*delay + 0.5*maxf(accel, 0)*delay*delay
+}
+
 func isLaneChangeLandingSafe(p3Dist float32, destSplineID int, switchingCar Car, cars []Car) bool {
 	T := 2 * laneChangeHalfSecs
-	const safetyMargin = 2.0
 	for _, other := range cars {
 		if other.CurrentSplineID != destSplineID {
 			continue
@@ -5209,11 +5332,13 @@ func isLaneChangeLandingSafe(p3Dist float32, destSplineID int, switchingCar Car,
 		otherFrontAtLanding := other.DistanceOnSpline + other.Speed*T
 		gapAtLanding := otherFrontAtLanding - p3Dist
 		if gapAtLanding >= 0 {
-			if gapAtLanding < other.Length+safetyMargin {
+			extra := laneChangeReactionClosingExtra(switchingCar.Speed-other.Speed, switchingCar.Accel)
+			if gapAtLanding < other.Length+laneChangeSafetyMarginM+extra {
 				return false
 			}
 		} else {
-			if -gapAtLanding < switchingCar.Length+safetyMargin {
+			extra := laneChangeReactionClosingExtra(other.Speed-switchingCar.Speed, other.Accel)
+			if -gapAtLanding < switchingCar.Length+laneChangeSafetyMarginM+extra {
 				return false
 			}
 		}
@@ -5317,10 +5442,18 @@ func computeLaneChanges(cars []Car, splines []Spline, lcs []Spline, nextID *int,
 
 		if car.DesiredLaneSplineID >= 0 {
 			if car.DistanceOnSpline >= car.DesiredLaneDeadline {
-				if newLcs, ok := buildLaneChangeBridge(car, car.DesiredLaneSplineID, splines, splineIndexByID, lcs, nextID, true); ok {
-					lcs = newLcs
-					car.DesiredLaneSplineID = -1
-					car.DesiredLaneDeadline = 0
+				srcIdx, srcOk := splineIndexByID[car.CurrentSplineID]
+				destIdx, destOk := splineIndexByID[car.DesiredLaneSplineID]
+				if srcOk && destOk {
+					if p3Dist, feasible := laneChangeLandingDistForMode(*car, splines[srcIdx], splines[destIdx], true); feasible {
+						if isLaneChangeLandingSafe(p3Dist, car.DesiredLaneSplineID, *car, cars) {
+							if newLcs, ok := buildLaneChangeBridge(car, car.DesiredLaneSplineID, splines, splineIndexByID, lcs, nextID, true); ok {
+								lcs = newLcs
+								car.DesiredLaneSplineID = -1
+								car.DesiredLaneDeadline = 0
+							}
+						}
+					}
 				}
 			} else {
 				srcIdx, srcOk := splineIndexByID[car.CurrentSplineID]
