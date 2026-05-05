@@ -4959,7 +4959,6 @@ func resolveTransitionCar(pending pendingTransitionCar, graph *RoadGraph, stoppi
 			return appendUpdatedCar(alive, indexRemap, pending.originalIndex, car), true
 		}
 
-		applyCurrentSplineSpeedUpdate(&car, pending.route, currentSpline, graph, stoppingLightsBySpline, pedestrianBlockedBySpline, pending.followCap, pending.shouldHoldSpeed, dt)
 		if car.DistanceOnSpline <= currentSpline.Length {
 			car = settleCarOnCurrentSpline(car, currentSpline, dt, &sampleCursor)
 			if shouldBeginBusStopDwell(car, pending.route, currentSpline, graph) {
