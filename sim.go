@@ -62,6 +62,10 @@ const (
 	predictionHorizonSeconds float32 = 3.0
 	predictionStepSeconds    float32 = 0.15
 	blameAngleThresholdDeg   float32 = 45.0
+	crossDirectionMinAngleDeg float32 = 30.0
+	crossDirectionMaxAngleDeg float32 = 135.0
+	crossHitboxRadiusPad      float32 = 0.5
+	crossHitboxLengthPad      float32 = 0.5
 	brakeDecelMultiplier     float32 = 2.5
 	driverReactionDelayMinS  float32 = 0.2
 	driverReactionDelayMaxS  float32 = 0.5
@@ -441,11 +445,15 @@ type CollisionPrediction struct {
 }
 
 type collisionGeometry struct {
-	bodyRadius     float32
-	bodyOffsets    []float32
-	trailerRadius  float32
-	trailerOffsets []float32
-	coarseRadius   float32
+	bodyRadius          float32
+	bodyOffsets         []float32
+	trailerRadius       float32
+	trailerOffsets      []float32
+	coarseRadius        float32
+	crossBodyRadius     float32
+	crossBodyOffsets    []float32
+	crossTrailerRadius  float32
+	crossTrailerOffsets []float32
 }
 
 type BrakingProfile struct {
@@ -4329,6 +4337,8 @@ func predictCollision(aSamples, bSamples []TrajectorySample, geomA, geomB collis
 	}
 
 	coarseDistSq := (geomA.coarseRadius + geomB.coarseRadius) * (geomA.coarseRadius + geomB.coarseRadius)
+	crossCosUpper := float32(math.Cos(float64(crossDirectionMinAngleDeg) * math.Pi / 180))
+	crossCosLower := float32(math.Cos(float64(crossDirectionMaxAngleDeg) * math.Pi / 180))
 
 	for i := 0; i < count; i++ {
 		pA, hA := aSamples[i].Position, aSamples[i].Heading
@@ -4337,15 +4347,26 @@ func predictCollision(aSamples, bSamples []TrajectorySample, geomA, geomB collis
 			continue
 		}
 
-		collides := checkCircleGroups(pA, hA, geomA.bodyOffsets, geomA.bodyRadius, pB, hB, geomB.bodyOffsets, geomB.bodyRadius)
+		bRadA, bOffA := geomA.bodyRadius, geomA.bodyOffsets
+		bRadB, bOffB := geomB.bodyRadius, geomB.bodyOffsets
+		tRadA, tOffA := geomA.trailerRadius, geomA.trailerOffsets
+		tRadB, tOffB := geomB.trailerRadius, geomB.trailerOffsets
+		if d := dot(hA, hB); d <= crossCosUpper && d >= crossCosLower {
+			bRadA, bOffA = geomA.crossBodyRadius, geomA.crossBodyOffsets
+			bRadB, bOffB = geomB.crossBodyRadius, geomB.crossBodyOffsets
+			tRadA, tOffA = geomA.crossTrailerRadius, geomA.crossTrailerOffsets
+			tRadB, tOffB = geomB.crossTrailerRadius, geomB.crossTrailerOffsets
+		}
+
+		collides := checkCircleGroups(pA, hA, bOffA, bRadA, pB, hB, bOffB, bRadB)
 		if !collides && aSamples[i].HasTrailer {
-			collides = checkCircleGroups(aSamples[i].TrailerPosition, aSamples[i].TrailerHeading, geomA.trailerOffsets, geomA.trailerRadius, pB, hB, geomB.bodyOffsets, geomB.bodyRadius)
+			collides = checkCircleGroups(aSamples[i].TrailerPosition, aSamples[i].TrailerHeading, tOffA, tRadA, pB, hB, bOffB, bRadB)
 		}
 		if !collides && bSamples[i].HasTrailer {
-			collides = checkCircleGroups(pA, hA, geomA.bodyOffsets, geomA.bodyRadius, bSamples[i].TrailerPosition, bSamples[i].TrailerHeading, geomB.trailerOffsets, geomB.trailerRadius)
+			collides = checkCircleGroups(pA, hA, bOffA, bRadA, bSamples[i].TrailerPosition, bSamples[i].TrailerHeading, tOffB, tRadB)
 		}
 		if !collides && aSamples[i].HasTrailer && bSamples[i].HasTrailer {
-			collides = checkCircleGroups(aSamples[i].TrailerPosition, aSamples[i].TrailerHeading, geomA.trailerOffsets, geomA.trailerRadius, bSamples[i].TrailerPosition, bSamples[i].TrailerHeading, geomB.trailerOffsets, geomB.trailerRadius)
+			collides = checkCircleGroups(aSamples[i].TrailerPosition, aSamples[i].TrailerHeading, tOffA, tRadA, bSamples[i].TrailerPosition, bSamples[i].TrailerHeading, tOffB, tRadB)
 		}
 		if !collides {
 			continue
@@ -6456,12 +6477,20 @@ func PickNextColorIndex(routes []Route) int {
 }
 
 func hitboxRadius(width float32) float32 {
-	return width/2 + 0.35
+	return hitboxRadiusPadded(width, 0)
+}
+
+func hitboxRadiusPadded(width, radPad float32) float32 {
+	return width/2 + 0.35 + radPad
 }
 
 func hitboxCircleOffsets(length, width float32) []float32 {
-	r := hitboxRadius(width)
-	span := 2 * (length/2 + 1.0 - r)
+	return hitboxCircleOffsetsPadded(length, width, 0, 0)
+}
+
+func hitboxCircleOffsetsPadded(length, width, radPad, endPad float32) []float32 {
+	r := hitboxRadiusPadded(width, radPad)
+	span := 2 * (length/2 + 1.0 + endPad - r)
 	if span < 0 {
 		span = 0
 	}
@@ -6484,13 +6513,17 @@ func hitboxCircleOffsets(length, width float32) []float32 {
 
 func buildCollisionGeometry(car Car) collisionGeometry {
 	geom := collisionGeometry{
-		bodyRadius:   collisionRadius(car),
-		bodyOffsets:  collisionCircleOffsets(car),
-		coarseRadius: car.Length/2 + 1.0,
+		bodyRadius:       collisionRadius(car),
+		bodyOffsets:      collisionCircleOffsets(car),
+		coarseRadius:     car.Length/2 + 1.0,
+		crossBodyRadius:  hitboxRadiusPadded(car.Width, crossHitboxRadiusPad),
+		crossBodyOffsets: hitboxCircleOffsetsPadded(car.Length, car.Width, crossHitboxRadiusPad, crossHitboxLengthPad),
 	}
 	if car.Trailer.HasTrailer {
 		geom.trailerRadius = hitboxRadius(car.Trailer.Width)
 		geom.trailerOffsets = hitboxCircleOffsets(car.Trailer.Length, car.Trailer.Width)
+		geom.crossTrailerRadius = hitboxRadiusPadded(car.Trailer.Width, crossHitboxRadiusPad)
+		geom.crossTrailerOffsets = hitboxCircleOffsetsPadded(car.Trailer.Length, car.Trailer.Width, crossHitboxRadiusPad, crossHitboxLengthPad)
 		geom.coarseRadius += car.Trailer.Length + 1.0
 	}
 	return geom

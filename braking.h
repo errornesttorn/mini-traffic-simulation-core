@@ -16,6 +16,10 @@
 #define PREDICTION_HORIZON_S 3.0f
 #define PREDICTION_STEP_S    0.15f
 #define BLAME_ANGLE_THRESH   45.0f
+#define CROSS_DIR_MIN_ANGLE_DEG 30.0f
+#define CROSS_DIR_MAX_ANGLE_DEG 135.0f
+#define CROSS_HITBOX_RAD_PAD 0.5f
+#define CROSS_HITBOX_LEN_PAD 0.5f
 #define BRAKE_DECEL_MULT     2.5f
 #define DRIVER_REACTION_DELAY_MAX_S 0.5f
 #define ACCEL_ESC_LOOK_S     1.0f
@@ -75,6 +79,10 @@ typedef struct {
     int body_offset_count, trailer_offset_count;
     float body_offsets[MAX_HITBOX_CIRCLES];
     float trailer_offsets[MAX_HITBOX_CIRCLES];
+    float cross_body_radius, cross_trailer_radius;
+    int cross_body_offset_count, cross_trailer_offset_count;
+    float cross_body_offsets[MAX_HITBOX_CIRCLES];
+    float cross_trailer_offsets[MAX_HITBOX_CIRCLES];
 } CCollGeom;
 
 typedef struct { float min_x, min_y, max_x, max_y; } CAABB;

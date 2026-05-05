@@ -345,11 +345,16 @@ static int find_forced_lane_change(const CGraph *g, const CRouteTree *tree,
    Collision geometry
    ═══════════════════════════════════════════════════════════════════ */
 
-static float hitbox_radius(float width) { return width / 2 + 0.35f; }
+static float hitbox_radius_padded(float width, float rad_pad) {
+    return width / 2 + 0.35f + rad_pad;
+}
 
-static int hitbox_circle_offsets(float length, float width, float *out, int max_out) {
-    float r = hitbox_radius(width);
-    float span = 2 * (length / 2 + 1.0f - r);
+static float hitbox_radius(float width) { return hitbox_radius_padded(width, 0.0f); }
+
+static int hitbox_circle_offsets_padded(float length, float width, float rad_pad, float end_pad,
+                                        float *out, int max_out) {
+    float r = hitbox_radius_padded(width, rad_pad);
+    float span = 2 * (length / 2 + 1.0f + end_pad - r);
     if (span < 0) span = 0;
     float max_spacing = 2 * r + 1.0f;
     int count = (int)ceilf(span / max_spacing) + 1;
@@ -361,15 +366,27 @@ static int hitbox_circle_offsets(float length, float width, float *out, int max_
     return count;
 }
 
+static int hitbox_circle_offsets(float length, float width, float *out, int max_out) {
+    return hitbox_circle_offsets_padded(length, width, 0.0f, 0.0f, out, max_out);
+}
+
 static CCollGeom build_collision_geometry(const CCar *car) {
     CCollGeom g;
     memset(&g, 0, sizeof(g));
     g.body_radius = hitbox_radius(car->width);
     g.body_offset_count = hitbox_circle_offsets(car->length, car->width, g.body_offsets, MAX_HITBOX_CIRCLES);
     g.coarse_radius = car->length / 2 + 1.0f;
+    g.cross_body_radius = hitbox_radius_padded(car->width, CROSS_HITBOX_RAD_PAD);
+    g.cross_body_offset_count = hitbox_circle_offsets_padded(car->length, car->width,
+                                                              CROSS_HITBOX_RAD_PAD, CROSS_HITBOX_LEN_PAD,
+                                                              g.cross_body_offsets, MAX_HITBOX_CIRCLES);
     if (car->has_trailer) {
         g.trailer_radius = hitbox_radius(car->trailer_width);
         g.trailer_offset_count = hitbox_circle_offsets(car->trailer_length, car->trailer_width, g.trailer_offsets, MAX_HITBOX_CIRCLES);
+        g.cross_trailer_radius = hitbox_radius_padded(car->trailer_width, CROSS_HITBOX_RAD_PAD);
+        g.cross_trailer_offset_count = hitbox_circle_offsets_padded(car->trailer_length, car->trailer_width,
+                                                                     CROSS_HITBOX_RAD_PAD, CROSS_HITBOX_LEN_PAD,
+                                                                     g.cross_trailer_offsets, MAX_HITBOX_CIRCLES);
         g.coarse_radius += car->trailer_length + 1.0f;
     }
     return g;
@@ -590,26 +607,52 @@ static int predict_collision(const CTrajSample *a, int na,
     if (count == 0) return 0;
     float coarse_sq = (ga->coarse_radius + gb->coarse_radius) *
                       (ga->coarse_radius + gb->coarse_radius);
+    float cross_cos_upper = cosf(CROSS_DIR_MIN_ANGLE_DEG * (M_PIf / 180.0f));
+    float cross_cos_lower = cosf(CROSS_DIR_MAX_ANGLE_DEG * (M_PIf / 180.0f));
     for (int i = 0; i < count; i++) {
         CVec2 pa = a[i].position, ha = a[i].heading;
         CVec2 pb = b[i].position, hb = b[i].heading;
         if (vdist_sq(pa, pb) > coarse_sq) continue;
 
-        int collides = check_circle_groups(pa, ha, ga->body_offsets, ga->body_offset_count, ga->body_radius,
-                                           pb, hb, gb->body_offsets, gb->body_offset_count, gb->body_radius);
+        const float *body_offs_a = ga->body_offsets;
+        const float *body_offs_b = gb->body_offsets;
+        const float *trail_offs_a = ga->trailer_offsets;
+        const float *trail_offs_b = gb->trailer_offsets;
+        int body_n_a = ga->body_offset_count, body_n_b = gb->body_offset_count;
+        int trail_n_a = ga->trailer_offset_count, trail_n_b = gb->trailer_offset_count;
+        float body_r_a = ga->body_radius, body_r_b = gb->body_radius;
+        float trail_r_a = ga->trailer_radius, trail_r_b = gb->trailer_radius;
+        float hdot = vdot(ha, hb);
+        if (hdot <= cross_cos_upper && hdot >= cross_cos_lower) {
+            body_offs_a = ga->cross_body_offsets;
+            body_offs_b = gb->cross_body_offsets;
+            trail_offs_a = ga->cross_trailer_offsets;
+            trail_offs_b = gb->cross_trailer_offsets;
+            body_n_a = ga->cross_body_offset_count;
+            body_n_b = gb->cross_body_offset_count;
+            trail_n_a = ga->cross_trailer_offset_count;
+            trail_n_b = gb->cross_trailer_offset_count;
+            body_r_a = ga->cross_body_radius;
+            body_r_b = gb->cross_body_radius;
+            trail_r_a = ga->cross_trailer_radius;
+            trail_r_b = gb->cross_trailer_radius;
+        }
+
+        int collides = check_circle_groups(pa, ha, body_offs_a, body_n_a, body_r_a,
+                                           pb, hb, body_offs_b, body_n_b, body_r_b);
         if (!collides && a[i].has_trailer)
             collides = check_circle_groups(a[i].trailer_position, a[i].trailer_heading,
-                                           ga->trailer_offsets, ga->trailer_offset_count, ga->trailer_radius,
-                                           pb, hb, gb->body_offsets, gb->body_offset_count, gb->body_radius);
+                                           trail_offs_a, trail_n_a, trail_r_a,
+                                           pb, hb, body_offs_b, body_n_b, body_r_b);
         if (!collides && b[i].has_trailer)
-            collides = check_circle_groups(pa, ha, ga->body_offsets, ga->body_offset_count, ga->body_radius,
+            collides = check_circle_groups(pa, ha, body_offs_a, body_n_a, body_r_a,
                                            b[i].trailer_position, b[i].trailer_heading,
-                                           gb->trailer_offsets, gb->trailer_offset_count, gb->trailer_radius);
+                                           trail_offs_b, trail_n_b, trail_r_b);
         if (!collides && a[i].has_trailer && b[i].has_trailer)
             collides = check_circle_groups(a[i].trailer_position, a[i].trailer_heading,
-                                           ga->trailer_offsets, ga->trailer_offset_count, ga->trailer_radius,
+                                           trail_offs_a, trail_n_a, trail_r_a,
                                            b[i].trailer_position, b[i].trailer_heading,
-                                           gb->trailer_offsets, gb->trailer_offset_count, gb->trailer_radius);
+                                           trail_offs_b, trail_n_b, trail_r_b);
         if (!collides) continue;
 
         int pi = i > 0 ? i - 1 : 0;
